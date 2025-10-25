@@ -27,7 +27,6 @@ class LlmInference {
           .map((dynamic event) => event.toString());
     } on PlatformException catch (e) {
       // Handle potential errors when setting up the stream
-      print("Error starting stream: ${e.message}");
       // Return an empty stream or a stream with an error
       return Stream.error('Failed to start response stream: ${e.message}');
     }
@@ -35,12 +34,7 @@ class LlmInference {
 
   /// Resets the model's conversation history.
   Future<void> resetSession() async {
-    try {
-      await _methodChannel.invokeMethod('resetSession');
-    } on PlatformException catch (e) {
-      // Handle potential errors
-      print("Failed to reset session: '${e.message}'.");
-    }
+    await _methodChannel.invokeMethod('resetSession');
   }
 
   /// Estimates the number of remaining tokens the model can process.
@@ -55,7 +49,6 @@ class LlmInference {
       );
       return tokens;
     } on PlatformException catch (e) {
-      print("Failed to estimate tokens: '${e.message}'.");
       return 0; // Return a default value on error
     }
   }

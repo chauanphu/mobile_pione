@@ -19,6 +19,7 @@ class InferenceModel private constructor(context: Context) {
     private val TAG = "InferenceModel"
 
     private lateinit var llmInference: LlmInference
+    private lateinit var promptTemplate: PromptTemplates
     private lateinit var llmInferenceSession: LlmInferenceSession
 
     // The init block is called when an instance of the class is created.
@@ -40,6 +41,15 @@ class InferenceModel private constructor(context: Context) {
                 .build()
             llmInference = LlmInference.createFromOptions(context, inferenceOptions)
 
+            promptTemplate = PromptTemplates.builder()
+                .setUserPrefix("")
+                .setUserSuffix("")
+                .setModelPrefix("Answer concisely in roughly 2-3 sentences using paragraph only. Stricly avoid using emoji.")
+                .setModelSuffix("")
+                .setSystemPrefix("You are a helpful visual impaired assistant.")
+                .setSystemSuffix("")
+                .build()
+
             // 2. Create the LlmInferenceSession
             createSession()
         } catch (e: Exception) {
@@ -59,6 +69,7 @@ class InferenceModel private constructor(context: Context) {
             .setTopK(TOP_K)
             .setTopP(TOP_P)
             .setGraphOptions(GraphOptions.builder().setEnableVisionModality(true).build())
+            .setPromptTemplates(promptTemplate)
             .build()
 
         llmInferenceSession =
@@ -116,7 +127,7 @@ class InferenceModel private constructor(context: Context) {
         private const val MODEL_NAME = "model.litertlm"
 
         // Model parameters
-        private const val MAX_TOKENS = 128
+        private const val MAX_TOKENS = 512
         private const val TOP_K = 40
         private const val TOP_P = 1.0f
         private const val TEMPERATURE = 0.4f
