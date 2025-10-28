@@ -23,7 +23,7 @@ class LlmInference {
     required Uint8List image,
   }) async {
     try {
-      await resetSession();
+      await _methodChannel.invokeMethod('resetSession');
       return _generateResponseStream(prompt: prompt, image: image);
     } on PlatformException catch (e) {
       throw Exception('Failed to reset session and generate caption: ${e.message}');

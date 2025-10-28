@@ -43,7 +43,12 @@ class InferenceModel private constructor(context: Context) {
                 .setUserSuffix("")
                 .setModelPrefix("")
                 .setModelSuffix("")
-                .setSystemPrefix("You are a helpful visual impaired assistant. Answer concisely in roughly 2-3 sentences. Strictly avoid using emoji.")
+                .setSystemPrefix("You are an AI navigation assistant for a visually impaired user. Your task is to describe the scene in front of you concisely, focusing only on objects and obstacles relevant for navigation and interaction.
+Follow these rules strictly:
+1. Identify key objects and obstacles.
+2. State their location relative to the user (e.g., 'in front', 'to your right').
+3. Use short, direct sentences. Limit the output to 1-2 sentences.
+4. Omit all descriptive language (colors, feelings, artistic details) unless essential for identification.")
                 .setSystemSuffix("")
                 .build()
 
@@ -106,7 +111,7 @@ class InferenceModel private constructor(context: Context) {
 
     companion object {
         private const val MODEL_NAME = "model.litertlm"
-        private const val MAX_TOKENS = 256
+        private const val MAX_TOKENS = 512
         private const val TOP_K = 20
         private const val TOP_P = 0.8f
         private const val TEMPERATURE = 0.7f

@@ -16,7 +16,8 @@ class CaptureScreen extends StatefulWidget {
   State<CaptureScreen> createState() => _CaptureScreenState();
 }
 
-class _CaptureScreenState extends State<CaptureScreen> with AutomaticKeepAliveClientMixin {
+class _CaptureScreenState extends State<CaptureScreen>
+    with AutomaticKeepAliveClientMixin {
   @override
   bool get wantKeepAlive => true;
 
@@ -36,6 +37,10 @@ class _CaptureScreenState extends State<CaptureScreen> with AutomaticKeepAliveCl
   final StringBuffer _captionBuffer = StringBuffer();
   StreamSubscription<String>? _captionSubscription;
 
+  // NEW: Debug Text State
+  String _debugOutput = "Model output will appear here...";
+  final ScrollController _debugScrollController = ScrollController();
+
   // Chunking state
   final List<String> _wordBuffer = [];
   final Queue<String> _speechQueue = Queue<String>();
@@ -45,7 +50,12 @@ class _CaptureScreenState extends State<CaptureScreen> with AutomaticKeepAliveCl
   static const int MIN_WEAK_BREAK_WORDS = 5;
   static const int FAILSAFE_CHUNK_SIZE = 15;
   static const Set<String> _weakBreakWords = {
-    'and', 'but', 'so', 'or', 'because', 'while',
+    'and',
+    'but',
+    'so',
+    'or',
+    'because',
+    'while',
   };
 
   @override
@@ -66,7 +76,10 @@ class _CaptureScreenState extends State<CaptureScreen> with AutomaticKeepAliveCl
 
       final cameras = await availableCameras();
       if (cameras.isEmpty) {
-        throw CameraException('No Camera Found', 'No available cameras on the device.');
+        throw CameraException(
+          'No Camera Found',
+          'No available cameras on the device.',
+        );
       }
       final firstCamera = cameras.first;
 
@@ -99,48 +112,82 @@ class _CaptureScreenState extends State<CaptureScreen> with AutomaticKeepAliveCl
   }
 
   Future<void> _describeSurroundings() async {
-    if (_isLoading || _cameraController == null || !_cameraController!.value.isInitialized) {
-      // Prevent action if loading or camera isn't ready
+    if (_isLoading ||
+        _cameraController == null ||
+        !_cameraController!.value.isInitialized) {
+      // Announce if camera is not ready or already processing for accessibility
+      if (_cameraError != null) {
+        await _ttsService.speak("Camera error: $_cameraError");
+      } else if (_isLoading) {
+        await _ttsService.speak("Already processing. Tap stop to cancel.");
+      } else if (_cameraController == null ||
+          !_cameraController!.value.isInitialized) {
+        await _ttsService.speak("Camera not ready. Please wait.");
+      }
       return;
     }
-    
-    await _stopAll();
-    setState(() => _isLoading = true);
-    await _ttsService.speak("Hold still.");
+
+    await _stopAll(); // Stop any previous operation
+    setState(() {
+      _isLoading = true;
+      _debugOutput = "Processing..."; // Update debug output
+    });
+    await _ttsService.speak("Hold still. Capturing image.");
 
     try {
       final XFile imageFile = await _cameraController!.takePicture();
       final Uint8List imageBytes = await imageFile.readAsBytes();
-      await _ttsService.speak("Processing. The process can take 10 to 15 seconds");
+      await _ttsService.speak(
+        "Image captured. Analyzing. The process may take 10 to 15 seconds.",
+      );
       final captionStream = await _llmInference.generateCaptionStream(
-        prompt: 'Describe the objects in front of me. Only select the 3 closest objects to me.',
+        prompt: 'Describe the following scene to identify the objects or obstacles for visual impaired user.',
         image: imageBytes,
       );
-      await _ttsService.speak("Done.");
+
       _captionSubscription = captionStream.listen(
         (partialResponse) {
           _captionBuffer.write(partialResponse);
-          final newWords = partialResponse.trim().split(' ').where((w) => w.isNotEmpty);
+          // NEW: Update debug output in real-time
+          setState(() {
+            _debugOutput = _captionBuffer.toString();
+          });
+          // Scroll to the bottom of the debug text box
+          _debugScrollController.jumpTo(
+            _debugScrollController.position.maxScrollExtent,
+          );
+
+          final newWords = partialResponse
+              .trim()
+              .split(' ')
+              .where((w) => w.isNotEmpty);
           _wordBuffer.addAll(newWords);
           _chunkAndQueueWords();
         },
-        onDone: () {
+        onDone: () async {
           _chunkAndQueueWords(forceChunk: true);
-          setState(() => _isLoading = false);
+          setState(() {
+            _isLoading = false;
+          });
         },
         onError: (error) async {
           await _ttsService.speak('An error occurred during analysis.');
-          setState(() => _isLoading = false);
+          setState(() {
+            _isLoading = false;
+            _debugOutput = "Error: $error"; // Update debug output with error
+          });
         },
       );
-      await _ttsService.speak("You can now capture new image.");
     } catch (e) {
       await _ttsService.speak('Failed to capture image. Please try again.');
-      setState(() => _isLoading = false);
+      await _llmInference.resetSession();
+      setState(() {
+        _isLoading = false;
+        _debugOutput = "Capture failed: $e"; // Update debug output with error
+      });
     }
   }
 
-  // _stopAll, _chunkAndQueueWords, _processSpeechQueue, and _resetSpeech methods remain unchanged...
   Future<void> _stopAll() async {
     await _captionSubscription?.cancel();
     _resetSpeech();
@@ -150,14 +197,19 @@ class _CaptureScreenState extends State<CaptureScreen> with AutomaticKeepAliveCl
     setState(() {
       _captionBuffer.clear();
       _isLoading = false;
+      _debugOutput = "Model output will appear here..."; // Reset debug output
     });
+    await _llmInference.resetSession();
   }
+
   void _chunkAndQueueWords({bool forceChunk = false}) {
     while (true) {
       int? breakIndex;
       for (int i = 0; i < _wordBuffer.length; i++) {
         String word = _wordBuffer[i].toLowerCase().trim();
-        String lastChar = word.isNotEmpty ? word.substring(word.length - 1) : '';
+        String lastChar = word.isNotEmpty
+            ? word.substring(word.length - 1)
+            : '';
         if ('.?!'.contains(lastChar)) {
           breakIndex = i;
           break;
@@ -185,14 +237,29 @@ class _CaptureScreenState extends State<CaptureScreen> with AutomaticKeepAliveCl
       }
     }
   }
+
   Future<void> _processSpeechQueue() async {
-    if (_isSpeaking || _speechQueue.isEmpty) return;
+    if (_isSpeaking) return;
+    // If the queue of things to say is empty...
+    if (_speechQueue.isEmpty) {
+      if (!_isLoading) {
+        await _ttsService.speak("Done. You can now capture new image.");
+        if (mounted) {
+          // Check if the widget is still visible
+          setState(() {
+            _debugOutput = "Model output will appear here...";
+          });
+        }
+      }
+      return;
+    }
     _isSpeaking = true;
     final chunkToSpeak = _speechQueue.removeFirst();
     await _ttsService.speak(chunkToSpeak);
     _isSpeaking = false;
     _processSpeechQueue();
   }
+
   void _resetSpeech() {
     _ttsService.stop();
     _speechQueue.clear();
@@ -222,7 +289,8 @@ class _CaptureScreenState extends State<CaptureScreen> with AutomaticKeepAliveCl
       builder: (context, snapshot) {
         if (snapshot.connectionState == ConnectionState.done) {
           // If the Future is complete, display the camera preview.
-          if (_cameraController == null || !_cameraController!.value.isInitialized) {
+          if (_cameraController == null ||
+              !_cameraController!.value.isInitialized) {
             // This case handles if the future completes but controller is still null
             return const Center(child: Text("Camera not available."));
           }
@@ -254,13 +322,78 @@ class _CaptureScreenState extends State<CaptureScreen> with AutomaticKeepAliveCl
     return Scaffold(
       appBar: AppBar(title: const Text('Visual Assistant')),
       body: Semantics(
-        label: "Camera View. Double-tap to describe surroundings. Long-press to stop.",
-        child: GestureDetector(
-          onDoubleTap: _isLoading ? null : _describeSurroundings,
-          onLongPress: _isLoading ? _stopAll : null,
-          // MODIFIED: Call the new build method
-          child: _buildCameraView(context),
+        label:
+            "Camera View. Double-tap to describe surroundings. Stop button at bottom right.",
+        child: Stack(
+          children: [
+            // Camera View takes up the entire background
+            Positioned.fill(child: _buildCameraView(context)),
+
+            // Loading Overlay
+            if (_isLoading)
+              Container(
+                color: Colors.black.withOpacity(0.5),
+                child: const Center(
+                  child: CircularProgressIndicator(color: Colors.white),
+                ),
+              ),
+
+            // Debug Output Text Box at the Bottom
+            Align(
+              alignment: Alignment.bottomCenter,
+              child: Container(
+                width: double.infinity,
+                height: 100, // Adjust height as needed
+                padding: const EdgeInsets.all(8.0),
+                color: Colors.black.withOpacity(0.7),
+                child: SingleChildScrollView(
+                  controller:
+                      _debugScrollController, // Attach scroll controller
+                  child: Text(
+                    _debugOutput,
+                    style: const TextStyle(color: Colors.white70, fontSize: 12),
+                  ),
+                ),
+              ),
+            ),
+          ],
         ),
+      ),
+      floatingActionButtonLocation:
+          FloatingActionButtonLocation.endFloat, // Position stop button
+      floatingActionButton: Column(
+        mainAxisAlignment: MainAxisAlignment.end,
+        children: [
+          // Double-tap anywhere to capture
+          // For now, we keep the gesture detector on the body.
+          GestureDetector(
+            onDoubleTap: _describeSurroundings,
+            child: Container(
+              color: Colors
+                  .transparent, // Make it transparent so camera shows through
+              height:
+                  MediaQuery.of(context).size.height -
+                  AppBar().preferredSize.height -
+                  100, // Roughly full screen minus app bar and debug box
+              width: MediaQuery.of(context).size.width,
+            ),
+          ),
+          // Stop Button
+          FloatingActionButton(
+            heroTag:
+                'stopButton', // Required if you have multiple FloatingActionButtons
+            onPressed: _isLoading
+                ? _stopAll
+                : null, // Disable if nothing is happening
+            backgroundColor: _isLoading
+                ? Colors.red
+                : Colors.grey, // Visual feedback for enabled/disabled
+            tooltip: 'Stop current process', // Accessibility label
+            child: _isLoading
+                ? const Icon(Icons.stop)
+                : const Icon(Icons.play_arrow),
+          ),
+        ],
       ),
     );
   }
