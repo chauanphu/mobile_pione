@@ -41,9 +41,9 @@ class InferenceModel private constructor(context: Context) {
             promptTemplate = PromptTemplates.builder()
                 .setUserPrefix("")
                 .setUserSuffix("")
-                .setModelPrefix("Answer concisely in roughly 2-3 sentences using paragraph only. Strictly avoid using emoji.")
+                .setModelPrefix("")
                 .setModelSuffix("")
-                .setSystemPrefix("You are a helpful visual impaired assistant.")
+                .setSystemPrefix("You are a helpful visual impaired assistant. Answer concisely in roughly 2-3 sentences. Strictly avoid using emoji.")
                 .setSystemSuffix("")
                 .build()
 
@@ -106,10 +106,10 @@ class InferenceModel private constructor(context: Context) {
 
     companion object {
         private const val MODEL_NAME = "model.litertlm"
-        private const val MAX_TOKENS = 512
-        private const val TOP_K = 40
-        private const val TOP_P = 1.0f
-        private const val TEMPERATURE = 0.4f
+        private const val MAX_TOKENS = 256
+        private const val TOP_K = 20
+        private const val TOP_P = 0.8f
+        private const val TEMPERATURE = 0.7f
 
         @Volatile
         private var instance: InferenceModel? = null
