@@ -1,32 +1,30 @@
-package com.example.mobile_pione // <-- Make sure this matches your package name
+// FILE: MainActivity.kt
+package com.example.mobile_pione
 
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import androidx.annotation.NonNull
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
-import io.flutter.plugin.common.MethodChannel
 import io.flutter.plugin.common.EventChannel
-import com.example.mobile_pione.InferenceModel
+import io.flutter.plugin.common.MethodChannel
 import com.google.mediapipe.tasks.genai.llminference.ProgressListener
 import java.util.concurrent.Executors
 
 class MainActivity : FlutterActivity() {
-    // Define unique names for our channels.
-    // These must match the strings on the Flutter (Dart) side.
     private val METHOD_CHANNEL_NAME = "com.example.mobile_pione/llm"
     private val EVENT_CHANNEL_NAME = "com.example.mobile_pione/llm_progress"
 
-    // Lazily initialize the InferenceModel singleton
     private val inferenceModel: InferenceModel by lazy {
         InferenceModel.getInstance(applicationContext)
     }
     
-    // A dedicated background thread for running model inference
     private val backgroundExecutor = Executors.newSingleThreadExecutor()
 
     override fun configureFlutterEngine(@NonNull flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
 
-        // --- Method Channel Setup (for single, non-streaming calls) ---
+        // --- Method Channel remains the same ---
         val methodChannel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, METHOD_CHANNEL_NAME)
         methodChannel.setMethodCallHandler { call, result ->
             when (call.method) {
@@ -61,33 +59,44 @@ class MainActivity : FlutterActivity() {
         val eventChannel = EventChannel(flutterEngine.dartExecutor.binaryMessenger, EVENT_CHANNEL_NAME)
         eventChannel.setStreamHandler(
             object : EventChannel.StreamHandler {
-                // This is called when Flutter starts listening on the stream.
-                // The prompt is passed as an argument.
                 override fun onListen(arguments: Any?, events: EventChannel.EventSink?) {
-                    val prompt = arguments as? String
-                    if (prompt == null || events == null) {
-                        events?.error("INVALID_ARGUMENT", "Prompt argument is missing for generateResponse.", null)
+                    if (events == null) return
+
+                    // **[MODIFIED]** Expect a Map with "prompt" and "image"
+                    val argsMap = arguments as? Map<String, Any>
+                    if (argsMap == null) {
+                        events.error("INVALID_ARGUMENT", "Arguments must be a Map.", null)
                         return
                     }
 
-                    // Run the inference on a background thread
+                    val prompt = argsMap["prompt"] as? String
+                    if (prompt == null) {
+                        events.error("INVALID_ARGUMENT", "Prompt is missing.", null)
+                        return
+                    }
+                    
+                    // **[NEW]** Extract image data
+                    val imageBytes = argsMap["image"] as? ByteArray
+
                     backgroundExecutor.execute {
                         try {
-                            // Create a ProgressListener that sends data back to Flutter
                             val progressListener = ProgressListener<String> { partialResult, done ->
-                                // Post the result back to the main thread to safely interact with the EventSink
                                 runOnUiThread {
-                                    events.success(partialResult) // Send partial result
+                                    events.success(partialResult)
                                     if (done) {
-                                        events.endOfStream() // Signal that the stream is complete
+                                        events.endOfStream()
                                     }
                                 }
                             }
-                            
-                            // Start the generation. The future's result is the final complete string,
-                            // but we are streaming the results via the listener. We call .get() here
-                            // to block this background thread until generation is done and to catch exceptions.
-                            inferenceModel.generateResponseAsync(prompt, progressListener).get()
+
+                            if (imageBytes != null) {
+                                // **[NEW]** Case 1: We have an image
+                                val bitmap = BitmapFactory.decodeByteArray(imageBytes, 0, imageBytes.size)
+                                inferenceModel.generateResponseWithImageAsync(prompt, bitmap, progressListener).get()
+                            } else {
+                                // **[EXISTING]** Case 2: No image, text-only prompt
+                                inferenceModel.generateResponseAsync(prompt, progressListener).get()
+                            }
 
                         } catch (e: Exception) {
                             runOnUiThread {
@@ -97,10 +106,8 @@ class MainActivity : FlutterActivity() {
                     }
                 }
 
-                // This is called when Flutter cancels its subscription to the stream.
                 override fun onCancel(arguments: Any?) {
-                    // No specific cancellation logic is needed for this model,
-                    // but you could add cleanup here if required.
+                    // No changes needed here
                 }
             }
         )
