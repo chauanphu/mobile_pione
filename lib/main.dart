@@ -33,7 +33,8 @@ class HomeScreen extends StatefulWidget {
 }
 
 class _HomeScreenState extends State<HomeScreen> {
-  int _selectedIndex = 0;
+  // A PageController is used to control the PageView.
+  late final PageController _pageController;
 
   final List<Widget> _pages = const [
     CaptureScreen(),
@@ -41,28 +42,30 @@ class _HomeScreenState extends State<HomeScreen> {
     FederatedLearningScreen(),
   ];
 
-  void _onItemTapped(int index) {
-    setState(() {
-      _selectedIndex = index;
-    });
+  @override
+  void initState() {
+    super.initState();
+    // Initialize the controller. The initialPage is 0 (the CaptureScreen).
+    _pageController = PageController(initialPage: 0);
+  }
+
+  @override
+  void dispose() {
+    // It's important to dispose of the controller when the widget is removed.
+    _pageController.dispose();
+    super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      body: IndexedStack(
-        index: _selectedIndex,
+      // The PageView widget creates a scrollable list that works page by page.
+      // This enables the swipe navigation between screens.
+      body: PageView(
+        controller: _pageController,
         children: _pages,
       ),
-      bottomNavigationBar: BottomNavigationBar(
-        currentIndex: _selectedIndex,
-        onTap: _onItemTapped,
-        items: const [
-          BottomNavigationBarItem(icon: Icon(Icons.camera_alt), label: 'Capture'),
-          BottomNavigationBarItem(icon: Icon(Icons.account_balance_wallet), label: 'Wallet'),
-          BottomNavigationBarItem(icon: Icon(Icons.school), label: 'Federated'),
-        ],
-      ),
+      // The BottomNavigationBar has been removed.
     );
   }
 }

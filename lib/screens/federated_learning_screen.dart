@@ -9,10 +9,12 @@ class FederatedLearningScreen extends StatefulWidget {
   State<FederatedLearningScreen> createState() => _FederatedLearningScreenState();
 }
 
-class _FederatedLearningScreenState extends State<FederatedLearningScreen> {
+class _FederatedLearningScreenState extends State<FederatedLearningScreen> with AutomaticKeepAliveClientMixin {
   double _progress = 0.0;
   bool _isRunning = false;
   Timer? _timer;
+  @override
+  bool get wantKeepAlive => true;
 
   void _startFederatedLearning() {
     if (_isRunning) return;

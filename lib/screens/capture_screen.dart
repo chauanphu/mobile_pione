@@ -15,7 +15,9 @@ class CaptureScreen extends StatefulWidget {
   State<CaptureScreen> createState() => _CaptureScreenState();
 }
 
-class _CaptureScreenState extends State<CaptureScreen> {
+class _CaptureScreenState extends State<CaptureScreen> with AutomaticKeepAliveClientMixin {
+  @override
+  bool get wantKeepAlive => true;
   // Services
   final LlmInference _llmInference = LlmInference.instance;
   late final TtsService _ttsService;

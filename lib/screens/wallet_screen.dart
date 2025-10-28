@@ -2,7 +2,6 @@ import 'package:flutter/material.dart';
 import 'package:reown_appkit/reown_appkit.dart';
 
 import '../services/wallet_service.dart';
-import 'function_screen.dart';
 
 class WalletScreen extends StatefulWidget {
   const WalletScreen({super.key});
@@ -11,9 +10,11 @@ class WalletScreen extends StatefulWidget {
   State<WalletScreen> createState() => _WalletScreenState();
 }
 
-class _WalletScreenState extends State<WalletScreen> {
+class _WalletScreenState extends State<WalletScreen> with AutomaticKeepAliveClientMixin  {
   bool _isInitialized = false;
   bool _isConnected = false;
+  @override
+  bool get wantKeepAlive => true;
 
   @override
   void initState() {
@@ -58,15 +59,9 @@ class _WalletScreenState extends State<WalletScreen> {
     );
   }
 
-  void _navigateToFunctionPage() {
-    Navigator.push(
-      context,
-      MaterialPageRoute(builder: (context) => const MyFunctionPage()),
-    );
-  }
-
   @override
   Widget build(BuildContext context) {
+    super.build(context);
     return Scaffold(
       appBar: AppBar(
         centerTitle: true,
@@ -93,12 +88,7 @@ class _WalletScreenState extends State<WalletScreen> {
             ),
           ],
         ),
-      ),
-      floatingActionButton: FloatingActionButton(
-        onPressed: _navigateToFunctionPage,
-        tooltip: 'Next page',
-        child: const Icon(Icons.arrow_right, size: 40),
-      ),
+      )
     );
   }
 }
