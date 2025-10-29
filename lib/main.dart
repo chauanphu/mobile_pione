@@ -1,5 +1,6 @@
 // FILE: lib/main.dart
 import 'package:flutter/material.dart';
+import 'package:mobile_pione/screens/glasses.dart';
 
 import 'screens/capture_screen.dart';
 import 'screens/wallet_screen.dart';
@@ -37,6 +38,7 @@ class _HomeScreenState extends State<HomeScreen> {
   late final PageController _pageController;
 
   final List<Widget> _pages = const [
+    CameraScreen(),
     CaptureScreen(),
     WalletScreen(),
     FederatedLearningScreen(),

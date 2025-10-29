@@ -16,6 +16,13 @@ The mobile will capture the image of the surroundings, feed toward the model and
     - When the user taps the "Connect Wallet" button, the app initiates a connection to the user's digital wallet using a secure authentication method.
     - Once connected, the app displays a confirmation message indicating that the wallet has been successfully connected.
 3. The "Federated Learning" screen:
+    - Shows the current global model cid.
     - The screen contains a "Start Federated Learning" button at the center.
-    - When the user taps the "Start Federated Learning" button, the app begins the federated learning process to improve the image-captioning model using local data on the device.
+    - When the user taps the "Start Federated Learning" button, the app subscribe to the websocket and listen to `NewRoundStarted` event.
+    - Upon receiving the `NewRoundStarted` event, the app downloads the global model, performs local training using the user's data, and then uploads the updated model weights back to the server.
     - The app provides feedback to the user about the progress of the federated learning process and notifies them upon completion.
+4. The "UVC Camera" screen:
+    - This page is similar to the "Image capture" screen but uses an external UVC camera instead of the device's built-in camera.
+    - The screen contains a "Capture from UVC" button at the bottom center.
+    - When the user taps the "Capture from UVC" button, the app captures an image from the connected UVC camera.
+    - The captured image is then processed using the same image-captioning model, and the generated caption is converted to speech using TTS and played back to the user.

@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- USB device vendor-id and product-id values for your camera -->
+    <!-- You can use wildcard configuration below or specify your camera IDs -->
+    <usb-device vendor-id="0c45" product-id="6366"/>
+</resources>

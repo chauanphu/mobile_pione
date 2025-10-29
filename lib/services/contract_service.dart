@@ -1,6 +1,7 @@
 // lib/services/contract_service.dart
 
 import 'dart:convert';
+import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:http/http.dart';
 import 'package:web3dart/crypto.dart';
@@ -91,7 +92,7 @@ class ContractService {
 
       // If the campaign ID is 0, it means there's no active campaign.
       if (activeCampaignId == BigInt.zero) {
-        print('No active campaign found.');
+        debugPrint('No active campaign found.');
         return null;
       }
 
@@ -110,7 +111,7 @@ class ContractService {
       }
       return null;
     } catch (e) {
-      print('Error fetching current global model: $e');
+      debugPrint('Error fetching current global model: $e');
       return null;
     }
   }

@@ -12,7 +12,7 @@ class WalletScreen extends StatefulWidget {
 
 class _WalletScreenState extends State<WalletScreen>
     with AutomaticKeepAliveClientMixin {
-  bool _isInitialized = false;
+  // bool _isInitialized = false;
   bool _isConnected = false;
   @override
   bool get wantKeepAlive => true;
@@ -28,7 +28,7 @@ class _WalletScreenState extends State<WalletScreen>
   void _initReownAppKit() async {
     try {
       await WalletService.appKitModal.init();
-      if (mounted) setState(() => _isInitialized = true);
+      // if (mounted) setState(() => _isInitialized = true);
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
