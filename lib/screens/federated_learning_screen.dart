@@ -11,19 +11,23 @@ class FederatedLearningScreen extends StatefulWidget {
   const FederatedLearningScreen({super.key});
 
   @override
-  State<FederatedLearningScreen> createState() => _FederatedLearningScreenState();
+  State<FederatedLearningScreen> createState() =>
+      _FederatedLearningScreenState();
 }
 
 class _FederatedLearningScreenState extends State<FederatedLearningScreen> {
   // WebSocket for presence/live-tracking
-  final String _presenceServerUrl = 'ws://192.168.1.86:3001';
+  final String _presenceServerUrl = 'ws://192.168.1.250:3001';
   WebSocketChannel? _presenceChannel;
 
   // State variables
   bool _isTraining = false;
   double _progress = 0.0;
   String _statusMessage = 'Initializing...';
-  String? _currentModelCID; // Holds the model CID for the current round
+  String? _currentModelCIDForTraining; // Renamed for clarity
+  // NEW: State variables for displaying the global model
+  bool _isLoadingModel = true;
+  String? _globalModelCID;
 
   @override
   void initState() {
@@ -33,14 +37,58 @@ class _FederatedLearningScreenState extends State<FederatedLearningScreen> {
 
   Future<void> _initializeServices() async {
     // Initialize the contract service
+    setState(() {
+      _statusMessage = 'Initializing services...';
+    });
     await ContractService.initialize();
-    
-    // Listen for new training rounds from the smart contract
+    _fetchCurrentModel(); // NEW: Fetch model on init
+  }
+
+  // NEW: Method to fetch the current global model from the contract
+  Future<void> _fetchCurrentModel() async {
+    setState(() {
+      _isLoadingModel = true;
+      _statusMessage = 'Fetching current global model...';
+    });
+    try {
+      final cid = await ContractService.getCurrentGlobalModel();
+      setState(() {
+        _globalModelCID = cid;
+        _isLoadingModel = false;
+        _statusMessage = cid != null
+            ? 'Ready to train.'
+            : 'No active campaign found.';
+      });
+    } catch (e) {
+      setState(() {
+        _isLoadingModel = false;
+        _statusMessage = 'Failed to fetch model.';
+      });
+    }
+  }
+
+  void _connectToPresenceServer() {
+    try {
+      _presenceChannel = WebSocketChannel.connect(
+        Uri.parse(_presenceServerUrl),
+      );
+      _presenceChannel!.sink.add(
+        jsonEncode({
+          'type': 'register_node',
+          'address': WalletService.getCurrentWalletAddress() ?? 'unknown',
+        }),
+      );
+    } catch (e) {
+      print("Failed to connect to presence server: $e");
+    }
+  }
+
+  void _startTrainingAndSubmission() async {
+    _connectToPresenceServer();
     ContractService().newRoundStartedStream.listen((eventData) {
-      // Assuming event format: [campaignId, round, initialModelCID]
       final String initialModelCID = eventData[2];
       setState(() {
-        _currentModelCID = initialModelCID;
+        _currentModelCIDForTraining = initialModelCID;
         _statusMessage = 'New round started. Ready to train.';
       });
     });
@@ -48,25 +96,7 @@ class _FederatedLearningScreenState extends State<FederatedLearningScreen> {
     setState(() {
       _statusMessage = 'Waiting for new training round...';
     });
-    
-    // Connect to presence server
-    _connectToPresenceServer();
-  }
 
-  void _connectToPresenceServer() {
-    try {
-      _presenceChannel = WebSocketChannel.connect(Uri.parse(_presenceServerUrl));
-      _presenceChannel!.sink.add(jsonEncode({
-        'type': 'node_online',
-        'address': WalletService.getCurrentWalletAddress() ?? 'unknown',
-      }));
-    } catch (e) {
-      print("Failed to connect to presence server: $e");
-    }
-  }
-
-  void _startTrainingAndSubmission() async {
-    // 1. Check for wallet and current round
     final walletAddress = WalletService.getCurrentWalletAddress();
     if (walletAddress == null) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -74,7 +104,7 @@ class _FederatedLearningScreenState extends State<FederatedLearningScreen> {
       );
       return;
     }
-    if (_currentModelCID == null) {
+    if (_currentModelCIDForTraining == null) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('No active training round.')),
       );
@@ -84,12 +114,9 @@ class _FederatedLearningScreenState extends State<FederatedLearningScreen> {
     setState(() {
       _isTraining = true;
       _progress = 0.0;
-      _statusMessage = 'Training with model: $_currentModelCID';
+      _statusMessage = 'Training with model: $_currentModelCIDForTraining';
     });
 
-    // 2. Simulate the training process
-    // In a real app, you would download the model from IPFS using the CID,
-    // train it, and then upload the new model to get a new CID.
     await Future.delayed(const Duration(seconds: 5), () {
       setState(() {
         _progress = 1.0;
@@ -97,35 +124,23 @@ class _FederatedLearningScreenState extends State<FederatedLearningScreen> {
       });
     });
 
-    // 3. Submit the new model CID to the smart contract
     try {
-      // We'll use a placeholder for the new CID
       const String newModelCid = 'new_trained_model_cid_placeholder';
-      
-      // We need credentials to sign. This part depends heavily on how Reown AppKit
-      // exposes the private key or a signing method. This is a conceptual example.
-      // You would replace this with the actual signing method from your wallet service.
-      final credentials = EthPrivateKey.fromHex('YOUR_PRIVATE_KEY_PLACEHOLDER'); // IMPORTANT: DO NOT HARDCODE KEYS
-      
-      final txHash = await ContractService.submitModel(newModelCid, credentials);
-      
+      final credentials = EthPrivateKey.fromHex('YOUR_PRIVATE_KEY_PLACEHOLDER');
+      final txHash = await ContractService.submitModel(
+        newModelCid,
+        credentials,
+      );
       setState(() {
         _statusMessage = 'Model submitted! Tx: $txHash';
         _isTraining = false;
       });
-
     } catch (e) {
       setState(() {
         _statusMessage = 'Error submitting model: $e';
         _isTraining = false;
       });
     }
-  }
-
-  @override
-  void dispose() {
-    _presenceChannel?.sink.close(); // Close presence connection
-    super.dispose();
   }
 
   @override
@@ -138,6 +153,49 @@ class _FederatedLearningScreenState extends State<FederatedLearningScreen> {
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
+              // NEW: Widget to display the current global model
+              Card(
+                elevation: 2,
+                child: Padding(
+                  padding: const EdgeInsets.all(16.0),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text(
+                        'Current Global Model',
+                        style: TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      if (_isLoadingModel)
+                        const Row(
+                          children: [
+                            SizedBox(
+                              width: 20,
+                              height: 20,
+                              child: CircularProgressIndicator(strokeWidth: 3),
+                            ),
+                            SizedBox(width: 16),
+                            Text('Fetching from blockchain...'),
+                          ],
+                        )
+                      else
+                        SelectableText(
+                          _globalModelCID ?? 'N/A (No active campaign)',
+                          style: TextStyle(
+                            fontFamily: 'monospace',
+                            color: _globalModelCID != null
+                                ? Colors.green.shade700
+                                : Colors.grey,
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
+              ),
+              const SizedBox(height: 40),
               if (_isTraining) LinearProgressIndicator(value: _progress),
               const SizedBox(height: 20),
               Text(_statusMessage, textAlign: TextAlign.center),
