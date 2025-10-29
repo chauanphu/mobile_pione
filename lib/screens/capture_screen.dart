@@ -141,7 +141,17 @@ class _CaptureScreenState extends State<CaptureScreen>
         "Image captured. Analyzing. The process may take 10 to 15 seconds.",
       );
       final captionStream = await _llmInference.generateCaptionStream(
-        prompt: 'Describe the following scene to identify the objects or obstacles for visual impaired user.',
+        prompt:
+            """
+You are an AI navigation assistant for a visually impaired user.
+Your task is to describe the scene in front of you concisely, focusing only on objects and obstacles relevant for navigation and interaction.
+Follow these rules strictly:
+1. Identify key objects and obstacles.
+2. State their location relative to the user (e.g., 'in front', 'to your right').
+3. Use short, direct sentences. Limit the output to 1-2 sentences.
+4. Omit all descriptive language (colors, feelings, artistic details) unless essential for identification.
+Describe the following scene to identify the objects or obstacles for visual impaired user.
+""",
         image: imageBytes,
       );
 
@@ -317,81 +327,71 @@ class _CaptureScreenState extends State<CaptureScreen>
 
   @override
   Widget build(BuildContext context) {
-    super.build(context);
+    super.build(context); // This is needed for AutomaticKeepAliveClientMixin
 
     return Scaffold(
       appBar: AppBar(title: const Text('Visual Assistant')),
-      body: Semantics(
-        label:
-            "Camera View. Double-tap to describe surroundings. Stop button at bottom right.",
-        child: Stack(
-          children: [
-            // Camera View takes up the entire background
-            Positioned.fill(child: _buildCameraView(context)),
-
-            // Loading Overlay
-            if (_isLoading)
-              Container(
-                color: Colors.black.withOpacity(0.5),
-                child: const Center(
-                  child: CircularProgressIndicator(color: Colors.white),
-                ),
-              ),
-
-            // Debug Output Text Box at the Bottom
-            Align(
-              alignment: Alignment.bottomCenter,
-              child: Container(
-                width: double.infinity,
-                height: 100, // Adjust height as needed
-                padding: const EdgeInsets.all(8.0),
-                color: Colors.black.withOpacity(0.7),
-                child: SingleChildScrollView(
-                  controller:
-                      _debugScrollController, // Attach scroll controller
-                  child: Text(
-                    _debugOutput,
-                    style: const TextStyle(color: Colors.white70, fontSize: 12),
-                  ),
-                ),
-              ),
-            ),
-          ],
-        ),
-      ),
-      floatingActionButtonLocation:
-          FloatingActionButtonLocation.endFloat, // Position stop button
-      floatingActionButton: Column(
-        mainAxisAlignment: MainAxisAlignment.end,
+      body: Stack(
+        // Use a single Stack for all layered elements.
+        // fit: StackFit.expand ensures the Stack fills the body.
+        fit: StackFit.expand,
         children: [
-          // Double-tap anywhere to capture
-          // For now, we keep the gesture detector on the body.
+          // 1. Camera View is the base layer.
+          _buildCameraView(context),
+
+          // 2. A full-screen GestureDetector for the double-tap action.
+          // It sits invisibly on top of the camera view.
           GestureDetector(
             onDoubleTap: _describeSurroundings,
-            child: Container(
-              color: Colors
-                  .transparent, // Make it transparent so camera shows through
-              height:
-                  MediaQuery.of(context).size.height -
-                  AppBar().preferredSize.height -
-                  100, // Roughly full screen minus app bar and debug box
-              width: MediaQuery.of(context).size.width,
+            // Ensures it captures taps even in transparent areas.
+            behavior: HitTestBehavior.opaque,
+            // Provide an accessibility label for the tap area.
+            child: Semantics(
+              label:
+                  "Camera View. Double-tap anywhere to describe surroundings.",
             ),
           ),
-          // Stop Button
-          FloatingActionButton(
-            heroTag:
-                'stopButton', // Required if you have multiple FloatingActionButtons
-            onPressed: _isLoading
-                ? _stopAll
-                : null, // Disable if nothing is happening
-            backgroundColor: _isLoading
-                ? Colors.red
-                : Colors.grey, // Visual feedback for enabled/disabled
-            tooltip: 'Stop current process', // Accessibility label
-            child: _isLoading
-                ? const Icon(Icons.stop)
-                : const Icon(Icons.play_arrow),
+
+          // 3. The loading overlay, which appears only when processing.
+          if (_isLoading)
+            Container(
+              color: Colors.black.withOpacity(0.5),
+              child: const Center(
+                child: CircularProgressIndicator(color: Colors.white),
+              ),
+            ),
+
+          // 4. The debug output box, aligned to the bottom.
+          Align(
+            alignment: Alignment.bottomCenter,
+            child: Container(
+              width: double.infinity,
+              height: 100, // The height of the debug box.
+              padding: const EdgeInsets.all(8.0),
+              color: Colors.black.withOpacity(0.7),
+              child: SingleChildScrollView(
+                controller: _debugScrollController,
+                child: Text(
+                  _debugOutput,
+                  style: const TextStyle(color: Colors.white70, fontSize: 12),
+                ),
+              ),
+            ),
+          ),
+
+          // 5. The Stop Button, positioned right above the debug box.
+          Positioned(
+            right: 16.0, // 16 pixels from the right edge.
+            // The button's bottom edge will be 116 pixels from the screen's bottom:
+            // 100px (height of debug box) + 16px (for padding).
+            bottom: 100.0 + 16.0,
+            child: FloatingActionButton(
+              heroTag: 'stopButton',
+              onPressed: _isLoading ? _stopAll : null,
+              backgroundColor: _isLoading ? Colors.red : Colors.grey,
+              tooltip: 'Stop current process',
+              child: const Icon(Icons.stop),
+            ),
           ),
         ],
       ),

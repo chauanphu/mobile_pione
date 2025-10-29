@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:reown_appkit/reown_appkit.dart';
-
+import 'package:flutter/semantics.dart';
 import '../services/wallet_service.dart';
 
 class WalletScreen extends StatefulWidget {
@@ -10,7 +10,8 @@ class WalletScreen extends StatefulWidget {
   State<WalletScreen> createState() => _WalletScreenState();
 }
 
-class _WalletScreenState extends State<WalletScreen> with AutomaticKeepAliveClientMixin  {
+class _WalletScreenState extends State<WalletScreen>
+    with AutomaticKeepAliveClientMixin {
   bool _isInitialized = false;
   bool _isConnected = false;
   @override
@@ -50,13 +51,23 @@ class _WalletScreenState extends State<WalletScreen> with AutomaticKeepAliveClie
   }
 
   void _showConnectSuccess() {
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text('Wallet connected successfully!'),
-        backgroundColor: Colors.green,
-        duration: Duration(seconds: 2),
-      ),
-    );
+    // 1. Announce the success directly to the screen reader.
+    const String successMessage = 'Wallet connected successfully!';
+    SemanticsService.announce(successMessage, TextDirection.ltr);
+
+    // // 2. Provide haptic feedback for confirmation.
+    // HapticFeedback.mediumImpact();
+
+    // 3. Show the visual SnackBar for sighted users.
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(successMessage),
+          backgroundColor: Colors.green,
+          duration: Duration(seconds: 2),
+        ),
+      );
+    }
   }
 
   @override
@@ -84,11 +95,13 @@ class _WalletScreenState extends State<WalletScreen> with AutomaticKeepAliveClie
             const SizedBox(height: 16),
             Visibility(
               visible: WalletService.appKitModal.isConnected,
-              child: AppKitModalAccountButton(appKitModal: WalletService.appKitModal),
+              child: AppKitModalAccountButton(
+                appKitModal: WalletService.appKitModal,
+              ),
             ),
           ],
         ),
-      )
+      ),
     );
   }
 }

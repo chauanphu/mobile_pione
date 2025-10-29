@@ -63,7 +63,7 @@ class LlmInference {
         {'text': text},
       );
       return tokens;
-    } on PlatformException catch (e) {
+    } on PlatformException {
       return 0;
     }
   }
