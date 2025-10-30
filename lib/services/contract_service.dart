@@ -6,6 +6,8 @@ import 'package:flutter/services.dart';
 import 'package:http/http.dart';
 import 'package:web3dart/crypto.dart';
 import 'package:web3dart/web3dart.dart';
+import 'wallet_service.dart';
+import 'package:reown_appkit/reown_appkit.dart';
 
 class ContractService {
   // --- Configuration - Replace with your details ---
@@ -88,6 +90,7 @@ class ContractService {
         function: _activeCampaignIdFunction,
         params: [],
       );
+      debugPrint('Active Campaign ID result: $activeIdResult');
       final BigInt activeCampaignId = activeIdResult.first as BigInt;
 
       // If the campaign ID is 0, it means there's no active campaign.
@@ -104,10 +107,11 @@ class ContractService {
       );
 
       // 3. The result is a list. Based on the ABI, the globalModelCID is the 3rd element (index 2).
-      // Output structure: [id, state, globalModelCID, currentRound, ...]
+      // Output structure: [id, state, globalModelCID, currentRound, totalRounds, submissionDeadline, minSubmissions, submissionCounter]
       if (campaignDetailsResult.length > 2) {
         final String globalModelCID = campaignDetailsResult[2] as String;
-        return globalModelCID.isNotEmpty ? globalModelCID : null;
+        // Do NOT treat empty CID as "no active campaign"; return empty string to signal active campaign without model yet
+        return globalModelCID;
       }
       return null;
     } catch (e) {
@@ -116,7 +120,101 @@ class ContractService {
     }
   }
 
-  /// Submits a model CID to the smart contract.
+  /// Returns the current active campaign id (0 if none)
+  static Future<BigInt> getActiveCampaignId() async {
+    try {
+      final activeIdResult = await _web3client.call(
+        contract: _contract,
+        function: _activeCampaignIdFunction,
+        params: [],
+      );
+      return activeIdResult.first as BigInt;
+    } catch (e) {
+      debugPrint('Error fetching activeCampaignId: $e');
+      return BigInt.zero;
+    }
+  }
+
+  /// Fetch campaign details by id using the `campaigns` public getter
+  /// Returns a map with keys: id, state, globalModelCID, currentRound, totalRounds, submissionDeadline, minSubmissions, submissionCounter
+  static Future<Map<String, dynamic>?> getCampaignDetails(BigInt campaignId) async {
+    try {
+      final details = await _web3client.call(
+        contract: _contract,
+        function: _campaignsFunction,
+        params: [campaignId],
+      );
+      if (details.isEmpty) return null;
+      return {
+        'id': details[0] as BigInt,
+        'state': details[1] as int,
+        'globalModelCID': details[2] as String,
+        'currentRound': details[3] as int,
+        'totalRounds': details[4] as int,
+        'submissionDeadline': details[5] as BigInt,
+        'minSubmissions': details[6] as int,
+        'submissionCounter': details[7] as int,
+      };
+    } catch (e) {
+      debugPrint('Error fetching campaign details: $e');
+      return null;
+    }
+  }
+
+  /// Submits a model CID to the smart contract using wallet signing.
+  /// This sends the transaction through the connected wallet which will prompt the user to sign.
+  static Future<String> submitModelWithWallet(
+    String modelCid,
+    String walletAddress,
+  ) async {
+    try {
+      // Ensure contract is initialized
+      if (!_isInitialized) {
+        await initialize();
+      }
+
+      // Resolve topic and chainId for the connected session
+      final topic = WalletService.appKitModal.session?.topic;
+      final chainId = 'eip155:5080';
+
+      if (topic == null) {
+        throw Exception('No active wallet session (topic is null).');
+      }
+
+      // Build a minimal transaction template with the sender address
+      final fromAddress = EthereumAddress.fromHex(walletAddress);
+      final txTemplate = Transaction(
+        from: fromAddress,
+        // Optional: you can set gasPrice/maxGas if needed; AppKit/wallet can also estimate
+      );
+
+      debugPrint('Submitting model via wallet: $modelCid');
+      // Request the wallet to send the transaction using AppKit helper
+      final result = await WalletService.appKitModal.requestWriteContract(
+        topic: topic,
+        chainId: chainId,
+        deployedContract: _contract,
+        functionName: _submitModelFunction.name,
+        transaction: txTemplate,
+        parameters: [modelCid],
+        // method can be omitted; defaults to eth_sendTransaction
+      );
+
+      // result for eth_sendTransaction should be the tx hash (String)
+      final txHash = result?.toString() ?? '';
+      if (txHash.isEmpty) {
+        throw Exception('Empty transaction hash returned by wallet.');
+      }
+
+      debugPrint('Model submission txHash: $txHash');
+      return txHash;
+    } catch (e) {
+      debugPrint('Error submitting model with wallet: $e');
+      rethrow;
+    }
+  }
+
+  /// Submits a model CID to the smart contract using provided credentials.
   /// Requires the wallet's credentials to sign the transaction.
   static Future<String> submitModel(
     String modelCid,

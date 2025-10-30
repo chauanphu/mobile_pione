@@ -19,8 +19,9 @@ The mobile will capture the image of the surroundings, feed toward the model and
     - Shows the current global model cid.
     - The screen contains a "Start Federated Learning" button at the center.
     - When the user taps the "Start Federated Learning" button, the app subscribe to the websocket and listen to `NewRoundStarted` event.
-    - Upon receiving the `NewRoundStarted` event, the app downloads the global model, performs local training using the user's data, and then uploads the updated model weights back to the server.
-    - The app provides feedback to the user about the progress of the federated learning process and notifies them upon completion.
+    - Upon receiving the `NewRoundStarted` event, the app downloads the global model, performs local training using the user's data.
+    - After local training is complete, the app uploads the updated model weights as `.litertlm` to IPFS.
+    - Then the app submit the new model cid to the federated learning server via the smart contract.
 4. The "UVC Camera" screen:
     - This page is similar to the "Image capture" screen but uses an external UVC camera instead of the device's built-in camera.
     - The screen contains a "Capture from UVC" button at the bottom center.

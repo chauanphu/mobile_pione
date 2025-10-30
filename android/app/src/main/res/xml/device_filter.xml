@@ -2,5 +2,5 @@
 <resources>
     <!-- USB device vendor-id and product-id values for your camera -->
     <!-- You can use wildcard configuration below or specify your camera IDs -->
-    <usb-device vendor-id="0c45" product-id="6366"/>
+    <usb-device vendor-id="0c45" product-id="6366" class="255" subclass="66" protocol="1"/>
 </resources>

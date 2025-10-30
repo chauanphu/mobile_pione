@@ -4,7 +4,6 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:mobile_pione/services/contract_service.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
-import 'package:web3dart/web3dart.dart'; // Import web3dart
 import '../services/wallet_service.dart';
 
 class FederatedLearningScreen extends StatefulWidget {
@@ -29,10 +28,24 @@ class _FederatedLearningScreenState extends State<FederatedLearningScreen> {
   bool _isLoadingModel = true;
   String? _globalModelCID;
 
+  // NEW: State variables for campaign and round tracking
+  BigInt? _activeCampaignId;
+  BigInt? _currentRound;
+
+  // WebSocket connection status
+  bool _isPresenceConnected = false;
+
   @override
   void initState() {
     super.initState();
     _initializeServices();
+  }
+
+  @override
+  void dispose() {
+    // Disconnect websocket on screen dispose
+    _disconnectPresenceServer();
+    super.dispose();
   }
 
   Future<void> _initializeServices() async {
@@ -51,13 +64,24 @@ class _FederatedLearningScreenState extends State<FederatedLearningScreen> {
       _statusMessage = 'Fetching current global model...';
     });
     try {
+      final activeId = await ContractService.getActiveCampaignId();
       final cid = await ContractService.getCurrentGlobalModel();
+      Map<String, dynamic>? details;
+      if (activeId != BigInt.zero) {
+        details = await ContractService.getCampaignDetails(activeId);
+      }
       setState(() {
+        _activeCampaignId = activeId != BigInt.zero ? activeId : null;
+        _currentRound = details != null ? BigInt.from(details['currentRound'] as int) : null;
         _globalModelCID = cid;
         _isLoadingModel = false;
-        _statusMessage = cid != null
-            ? 'Ready to train.'
-            : 'No active campaign found.';
+        if (activeId == BigInt.zero) {
+          _statusMessage = 'No active campaign found.';
+        } else if ((cid ?? '').isEmpty) {
+          _statusMessage = 'Active campaign found. Waiting for global model...';
+        } else {
+          _statusMessage = 'Ready to train.';
+        }
       });
     } catch (e) {
       setState(() {
@@ -78,25 +102,32 @@ class _FederatedLearningScreenState extends State<FederatedLearningScreen> {
           'address': WalletService.getCurrentWalletAddress() ?? 'unknown',
         }),
       );
+      setState(() {
+        _isPresenceConnected = true;
+      });
+      debugPrint("Connected to presence server");
     } catch (e) {
-      print("Failed to connect to presence server: $e");
+      debugPrint("Failed to connect to presence server: $e");
+      setState(() {
+        _isPresenceConnected = false;
+      });
+    }
+  }
+
+  void _disconnectPresenceServer() {
+    try {
+      _presenceChannel?.sink.close();
+      _presenceChannel = null;
+      setState(() {
+        _isPresenceConnected = false;
+      });
+      debugPrint("Disconnected from presence server");
+    } catch (e) {
+      debugPrint("Error disconnecting from presence server: $e");
     }
   }
 
   void _startTrainingAndSubmission() async {
-    _connectToPresenceServer();
-    ContractService().newRoundStartedStream.listen((eventData) {
-      final String initialModelCID = eventData[2];
-      setState(() {
-        _currentModelCIDForTraining = initialModelCID;
-        _statusMessage = 'New round started. Ready to train.';
-      });
-    });
-
-    setState(() {
-      _statusMessage = 'Waiting for new training round...';
-    });
-
     final walletAddress = WalletService.getCurrentWalletAddress();
     if (walletAddress == null) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -104,42 +135,124 @@ class _FederatedLearningScreenState extends State<FederatedLearningScreen> {
       );
       return;
     }
-    if (_currentModelCIDForTraining == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('No active training round.')),
-      );
-      return;
-    }
 
+    _connectToPresenceServer();
+
+    // Listen to NewRoundStarted events
+    ContractService().newRoundStartedStream.listen(
+      (eventData) {
+        // Event structure: [campaignId, roundNumber, initialModelCID, ...]
+        if (eventData.length >= 3) {
+          final BigInt campaignId = eventData[0] as BigInt;
+          final BigInt roundNumber = eventData[1] as BigInt;
+          final String initialModelCID = eventData[2] as String;
+
+          setState(() {
+            _activeCampaignId = campaignId;
+            _currentRound = roundNumber;
+            _currentModelCIDForTraining = initialModelCID;
+            _statusMessage =
+                'New round started (Campaign $campaignId, Round $roundNumber).';
+          });
+
+          // Automatically start training after receiving the event
+          _performTrainingAndSubmission(initialModelCID, walletAddress);
+        }
+      },
+      onError: (error) {
+        setState(() {
+          _statusMessage = 'Error listening to events: $error';
+          _isTraining = false;
+        });
+      },
+    );
+
+    setState(() {
+      _statusMessage = _isPresenceConnected
+          ? 'Listening for submission event...'
+          : 'Waiting for new training round...';
+    });
+  }
+
+  Future<void> _performTrainingAndSubmission(
+    String modelCID,
+    String walletAddress,
+  ) async {
     setState(() {
       _isTraining = true;
       _progress = 0.0;
-      _statusMessage = 'Training with model: $_currentModelCIDForTraining';
-    });
-
-    await Future.delayed(const Duration(seconds: 5), () {
-      setState(() {
-        _progress = 1.0;
-        _statusMessage = 'Training complete. Submitting model...';
-      });
+      _statusMessage = 'Training with model: $modelCID';
     });
 
     try {
-      const String newModelCid = 'new_trained_model_cid_placeholder';
-      final credentials = EthPrivateKey.fromHex('YOUR_PRIVATE_KEY_PLACEHOLDER');
-      final txHash = await ContractService.submitModel(
+      // Simulate training process (5 seconds)
+      await Future.delayed(const Duration(seconds: 5), () {
+        setState(() {
+          _progress = 1.0;
+          _statusMessage = 'Training complete. Preparing submission...';
+        });
+      });
+
+      // Generate a trained model CID
+      // In production, this would be the IPFS CID of the uploaded model weights
+      final newModelCid = 'trained_model_${DateTime.now().millisecondsSinceEpoch}';
+
+      setState(() {
+        _statusMessage =
+            'Model trained: $newModelCid\n\n'
+            'Campaign: ${_activeCampaignId ?? "N/A"}\n'
+            'Round: ${_currentRound ?? "N/A"}\n\n'
+            'Submitting to smart contract...';
+      });
+
+      // Submit the model to the smart contract
+      final txHash = await ContractService.submitModelWithWallet(
         newModelCid,
-        credentials,
+        walletAddress,
       );
+
       setState(() {
-        _statusMessage = 'Model submitted! Tx: $txHash';
+        _statusMessage =
+            'Model Submission Successful!\n\n'
+            'Model CID: $newModelCid\n'
+            'Campaign: ${_activeCampaignId ?? "N/A"}\n'
+            'Round: ${_currentRound ?? "N/A"}\n\n'
+            'Transaction Hash: $txHash\n\n'
+            'Waiting for next round...';
         _isTraining = false;
       });
+
+      // Show success snackbar
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Model submitted successfully!'),
+            duration: Duration(seconds: 2),
+            backgroundColor: Colors.green,
+          ),
+        );
+      }
     } catch (e) {
+      debugPrint('Error during training and submission: $e');
+      
       setState(() {
-        _statusMessage = 'Error submitting model: $e';
+        _statusMessage =
+            'Error during submission:\n\n'
+            '$e\n\n'
+            'Please try again or check your wallet connection.';
         _isTraining = false;
       });
+
+      // Show error snackbar
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Error: $e'),
+            duration: const Duration(seconds: 3),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
     }
   }
 
@@ -195,14 +308,50 @@ class _FederatedLearningScreenState extends State<FederatedLearningScreen> {
                   ),
                 ),
               ),
-              const SizedBox(height: 40),
+              const SizedBox(height: 20),
+              // NEW: Display campaign and round information
+              if (_activeCampaignId != null && _currentRound != null)
+                Card(
+                  color: Colors.blue.shade50,
+                  child: Padding(
+                    padding: const EdgeInsets.all(12.0),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'Campaign: ${_activeCampaignId!} | Round: ${_currentRound!}',
+                          style: const TextStyle(
+                            fontSize: 14,
+                            fontWeight: FontWeight.w500,
+                          ),
+                        ),
+                        if (_currentModelCIDForTraining != null) ...[
+                          const SizedBox(height: 8),
+                          const Text(
+                            'Training Model:',
+                            style: TextStyle(fontSize: 12),
+                          ),
+                          SelectableText(
+                            _currentModelCIDForTraining!,
+                            style: const TextStyle(
+                              fontFamily: 'monospace',
+                              fontSize: 11,
+                              color: Colors.green,
+                            ),
+                          ),
+                        ],
+                      ],
+                    ),
+                  ),
+                ),
+              const SizedBox(height: 20),
               if (_isTraining) LinearProgressIndicator(value: _progress),
               const SizedBox(height: 20),
               Text(_statusMessage, textAlign: TextAlign.center),
               const SizedBox(height: 30),
               ElevatedButton(
                 onPressed: _isTraining ? null : _startTrainingAndSubmission,
-                child: Text(_isTraining ? 'Training...' : 'Start Training'),
+                child: Text(_isTraining ? 'Training...' : 'Join Training'),
               ),
             ],
           ),

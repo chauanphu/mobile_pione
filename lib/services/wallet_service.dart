@@ -60,5 +60,11 @@ class WalletService {
     } catch (_) {
       return null;
     }
+
+  }
+
+  /// Checks if wallet is currently connected
+  static bool isConnected() {
+    return _appKitModal.isConnected;
   }
 }

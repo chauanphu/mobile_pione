@@ -67,14 +67,42 @@ class _CameraScreenState extends State<CameraScreen> {
       });
     };
 
-    // Start auto-detection immediately
-    _startCameraAutoDetection();
+    // Surface Android plugin messages to the UI to help diagnosis
+    try {
+      // Not all versions expose msgCallback; guard with try
+      // ignore: invalid_use_of_protected_member
+      // ignore: invalid_use_of_visible_for_testing_member
+      // The field name is based on plugin README; if absent, this no-ops
+      // @ts-ignore dart
+      // dynamic is used to avoid analyzer errors if property is missing
+      (cameraController as dynamic).msgCallback = (String msg) async {
+        debugPrint('[UVC msg] $msg');
+        if (!mounted) return;
+        setState(() => _cameraError = msg);
+        // Heuristics to reflect detection state from messages
+        if (msg.contains('No device detected') ||
+            msg.contains('not UVC type') ||
+            msg.contains('Permission denied')) {
+          setState(() {
+            _cameraDetected = false;
+            isCameraOpen = false;
+          });
+        }
+      };
+    } catch (_) {
+      // Safe ignore if plugin API changed
+    }
+
+    // Defer auto-detection until after first frame so the PlatformView is built
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _startCameraAutoDetection();
+    });
   }
 
   /// Auto-detect UVC camera on USB connection with periodic polling
   Future<void> _startCameraAutoDetection() async {
+    await cameraController.initializeCamera();
     if (_isAutoDetecting) return;
-    
     setState(() {
       _isAutoDetecting = true;
     });
@@ -84,7 +112,7 @@ class _CameraScreenState extends State<CameraScreen> {
 
     // Poll for camera every 2 seconds
     _detectionTimer = Timer.periodic(
-      const Duration(seconds: 2),
+      const Duration(seconds: 5),
       (_) async {
         try {
           // Attempt to get camera features to verify camera presence
@@ -331,40 +359,56 @@ class _CameraScreenState extends State<CameraScreen> {
       );
     }
 
-    if (!_cameraDetected) {
-      return Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            const Icon(Icons.videocam_off, color: Colors.grey, size: 64),
-            const SizedBox(height: 16),
-            const Text(
-              'Searching for UVC Camera...',
-              style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-            ),
-            const SizedBox(height: 8),
-            const Text(
-              'Please connect a UVC camera to your device.',
-              textAlign: TextAlign.center,
-              style: TextStyle(color: Colors.grey),
-            ),
-            const SizedBox(height: 24),
-            const CircularProgressIndicator(),
-          ],
-        ),
-      );
-    }
-
+    // Always build the UVCCameraView so the platform view is initialized,
+    // then overlay status UI when the camera isn't detected yet.
     return Column(
       children: [
         Expanded(
-          child: UVCCameraView(
-            cameraController: cameraController,
-            width: 300,
-            height: 300,
+          child: Stack(
+            alignment: Alignment.center,
+            children: [
+              SizedBox(
+                width: 300,
+                height: 300,
+                child: UVCCameraView(
+                  cameraController: cameraController,
+                  width: 300,
+                  height: 300,
+                ),
+              ),
+              if (!_cameraDetected)
+                Container(
+                  color: Colors.black.withValues(alpha: 0.5),
+                  child: Center(
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: const [
+                        Icon(Icons.videocam_off, color: Colors.white, size: 64),
+                        SizedBox(height: 16),
+                        Text(
+                          'Searching for UVC Camera...',
+                          style: TextStyle(
+                            fontSize: 18,
+                            fontWeight: FontWeight.bold,
+                            color: Colors.white,
+                          ),
+                        ),
+                        SizedBox(height: 8),
+                        Text(
+                          'Please connect a UVC camera to your device.',
+                          textAlign: TextAlign.center,
+                          style: TextStyle(color: Colors.white70),
+                        ),
+                        SizedBox(height: 24),
+                        CircularProgressIndicator(color: Colors.white),
+                      ],
+                    ),
+                  ),
+                ),
+            ],
           ),
         ),
-        SizedBox(height: 8),
+        const SizedBox(height: 8),
         Row(
           mainAxisAlignment: MainAxisAlignment.spaceEvenly,
           children: [
@@ -427,7 +471,7 @@ class _CameraScreenState extends State<CameraScreen> {
 
           if (_isLoading)
             Container(
-              color: Colors.black.withOpacity(0.5),
+              color: Colors.black.withValues(alpha: 0.5),
               child: const Center(
                 child: CircularProgressIndicator(color: Colors.white),
               ),
