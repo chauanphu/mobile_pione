@@ -14,12 +14,44 @@ import java.util.concurrent.Executors
 class MainActivity : FlutterActivity() {
     private val METHOD_CHANNEL_NAME = "com.example.mobile_pione/llm"
     private val EVENT_CHANNEL_NAME = "com.example.mobile_pione/llm_progress"
+    private val STATUS_CHANNEL_NAME = "com.example.mobile_pione/llm_status"
 
     private val inferenceModel: InferenceModel by lazy {
         InferenceModel.getInstance(applicationContext)
     }
     
     private val backgroundExecutor = Executors.newSingleThreadExecutor()
+
+    // Model initialization state
+    private enum class ModelStatus { UNINITIALIZED, INITIALIZING, READY, ERROR }
+    @Volatile private var modelStatus: ModelStatus = ModelStatus.UNINITIALIZED
+    @Volatile private var modelInitError: String? = null
+    private var statusEventSink: EventChannel.EventSink? = null
+
+    private fun emitStatus(status: ModelStatus, message: String? = null) {
+        modelStatus = status
+        modelInitError = if (status == ModelStatus.ERROR) message else null
+        runOnUiThread {
+            statusEventSink?.success(mapOf(
+                "status" to status.name,
+                "message" to (message ?: "")
+            ))
+        }
+    }
+
+    private fun startModelInitializationIfNeeded() {
+        if (modelStatus == ModelStatus.READY || modelStatus == ModelStatus.INITIALIZING) return
+        emitStatus(ModelStatus.INITIALIZING, "Starting model initialization")
+        backgroundExecutor.execute {
+            try {
+                // Accessing the lazy property triggers heavy initialization OFF the UI thread
+                val model = inferenceModel
+                emitStatus(ModelStatus.READY, "Model ready")
+            } catch (e: Exception) {
+                emitStatus(ModelStatus.ERROR, e.message ?: "Unknown error")
+            }
+        }
+    }
 
     override fun configureFlutterEngine(@NonNull flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -28,12 +60,31 @@ class MainActivity : FlutterActivity() {
         val methodChannel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, METHOD_CHANNEL_NAME)
         methodChannel.setMethodCallHandler { call, result ->
             when (call.method) {
+                "initializeModel" -> {
+                    // Kick off background init and return immediately
+                    startModelInitializationIfNeeded()
+                    result.success("started")
+                }
+                "getModelStatus" -> {
+                    result.success(modelStatus.name)
+                }
+                "isModelReady" -> {
+                    result.success(modelStatus == ModelStatus.READY)
+                }
                 "resetSession" -> {
-                    try {
-                        inferenceModel.resetSession()
-                        result.success(true)
-                    } catch (e: Exception) {
-                        result.error("RESET_ERROR", "Failed to reset session", e.toString())
+                    if (modelStatus != ModelStatus.READY) {
+                        result.error("NOT_READY", "Model not ready. Current status: ${modelStatus.name}", modelInitError)
+                    } else {
+                        backgroundExecutor.execute {
+                            try {
+                                inferenceModel.resetSession()
+                                runOnUiThread { result.success(true) }
+                            } catch (e: Exception) {
+                                runOnUiThread {
+                                    result.error("RESET_ERROR", "Failed to reset session", e.toString())
+                                }
+                            }
+                        }
                     }
                 }
                 "sizeInTokens" -> {
@@ -42,11 +93,15 @@ class MainActivity : FlutterActivity() {
                         result.error("INVALID_ARGUMENT", "Text argument is missing for sizeInTokens.", null)
                         return@setMethodCallHandler
                     }
-                    try {
-                        val tokenCount = inferenceModel.sizeInTokens(text)
-                        result.success(tokenCount)
-                    } catch (e: Exception) {
-                        result.error("TOKEN_ERROR", "Failed to get token count", e.toString())
+                    if (modelStatus != ModelStatus.READY) {
+                        result.error("NOT_READY", "Model not ready. Current status: ${modelStatus.name}", modelInitError)
+                    } else {
+                        try {
+                            val tokenCount = inferenceModel.sizeInTokens(text)
+                            result.success(tokenCount)
+                        } catch (e: Exception) {
+                            result.error("TOKEN_ERROR", "Failed to get token count", e.toString())
+                        }
                     }
                 }
                 else -> {
@@ -66,6 +121,11 @@ class MainActivity : FlutterActivity() {
                     val argsMap = arguments as? Map<String, Any>
                     if (argsMap == null) {
                         events.error("INVALID_ARGUMENT", "Arguments must be a Map.", null)
+                        return
+                    }
+
+                    if (modelStatus != ModelStatus.READY) {
+                        events.error("NOT_READY", "Model not ready. Current status: ${modelStatus.name}", modelInitError)
                         return
                     }
 
@@ -111,5 +171,24 @@ class MainActivity : FlutterActivity() {
                 }
             }
         )
+
+        // --- Status Channel Setup (for model initialization progress) ---
+        val statusChannel = EventChannel(flutterEngine.dartExecutor.binaryMessenger, STATUS_CHANNEL_NAME)
+        statusChannel.setStreamHandler(
+            object : EventChannel.StreamHandler {
+                override fun onListen(arguments: Any?, events: EventChannel.EventSink?) {
+                    statusEventSink = events
+                    // Emit current status immediately
+                    emitStatus(modelStatus, modelInitError)
+                }
+
+                override fun onCancel(arguments: Any?) {
+                    statusEventSink = null
+                }
+            }
+        )
+
+        // Proactively start model initialization in the background
+        startModelInitializationIfNeeded()
     }
 }

@@ -31,9 +31,12 @@ class _CaptureScreenState extends State<CaptureScreen>
   // Services
   final LlmInference _llmInference = LlmInference.instance;
   late final TtsService _ttsService;
+  StreamSubscription<Map<String, dynamic>>? _statusSubscription;
 
   // UI State
   bool _isLoading = false;
+  bool _modelReady = false;
+  bool _announcedLoading = false;
   final StringBuffer _captionBuffer = StringBuffer();
   StreamSubscription<String>? _captionSubscription;
 
@@ -64,6 +67,24 @@ class _CaptureScreenState extends State<CaptureScreen>
     _ttsService = TtsService();
     // MODIFIED: Call the robust initialization method
     _initializeControllerFuture = _initializeCamera();
+
+    // Start model initialization early and subscribe to status updates
+    _llmInference.initializeModel();
+    _statusSubscription = _llmInference.modelStatusStream().listen((event) async {
+      final status = (event['status'] as String?) ?? 'UNKNOWN';
+      if (status == 'INITIALIZING' && !_announcedLoading) {
+        _announcedLoading = true;
+        await _ttsService.speak('Loading the vision model in the background. Please wait.');
+      }
+      if (status == 'READY') {
+        setState(() { _modelReady = true; });
+        await _ttsService.speak('Model is ready. Double tap to capture.');
+      }
+      if (status == 'ERROR') {
+        setState(() { _modelReady = false; });
+        await _ttsService.speak('Model failed to load. Please restart the app.');
+      }
+    });
   }
 
   // MODIFIED: Refactored camera initialization to be more robust
@@ -107,11 +128,16 @@ class _CaptureScreenState extends State<CaptureScreen>
   void dispose() {
     _captionSubscription?.cancel();
     _ttsService.dispose();
+    _statusSubscription?.cancel();
     _cameraController?.dispose(); // Safely dispose the controller
     super.dispose();
   }
 
   Future<void> _describeSurroundings() async {
+    if (!_modelReady) {
+      await _ttsService.speak('Model is still loading. Please wait.');
+      return;
+    }
     if (_isLoading ||
         _cameraController == null ||
         !_cameraController!.value.isInitialized) {

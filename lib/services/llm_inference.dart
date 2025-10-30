@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:typed_data';
 import 'package:flutter/services.dart';
 
 class LlmInference {
@@ -7,12 +8,87 @@ class LlmInference {
       MethodChannel('com.example.mobile_pione/llm');
   static const EventChannel _eventChannel =
       EventChannel('com.example.mobile_pione/llm_progress');
+  static const EventChannel _statusChannel =
+      EventChannel('com.example.mobile_pione/llm_status');
 
   // A private constructor to prevent direct instantiation
   LlmInference._();
 
   // The single instance of the class
   static final LlmInference instance = LlmInference._();
+
+  // Cached readiness flag to avoid repeated platform calls
+  bool _isReady = false;
+  Stream<Map<String, dynamic>>? _statusBroadcast;
+
+  /// Begin background model initialization (idempotent, returns immediately)
+  Future<void> initializeModel() async {
+    try {
+      await _methodChannel.invokeMethod('initializeModel');
+    } on PlatformException catch (e) {
+      // Swallow here; status stream will carry errors
+      // but expose as a debug exception if needed
+      // ignore: avoid_print
+      print('initializeModel error: ${e.message}');
+    }
+  }
+
+  /// Returns true when the native model is loaded and ready.
+  Future<bool> isModelReady() async {
+    if (_isReady) return true;
+    try {
+      final bool ready = await _methodChannel.invokeMethod('isModelReady');
+      _isReady = ready;
+      return ready;
+    } on PlatformException {
+      return false;
+    }
+  }
+
+  /// Returns the current model status string (UNINITIALIZED, INITIALIZING, READY, ERROR)
+  Future<String> getModelStatus() async {
+    try {
+      final String status = await _methodChannel.invokeMethod('getModelStatus');
+      return status;
+    } on PlatformException catch (e) {
+      return 'ERROR:${e.code}';
+    }
+  }
+
+  /// Stream of status updates from native side as a Map {status, message}
+  Stream<Map<String, dynamic>> modelStatusStream() {
+    _statusBroadcast ??= _statusChannel
+        .receiveBroadcastStream()
+        .map((dynamic event) => Map<String, dynamic>.from(event as Map));
+    return _statusBroadcast!;
+  }
+
+  /// Waits until the model reports READY or throws on timeout.
+  Future<void> waitUntilReady({Duration timeout = const Duration(seconds: 45)}) async {
+    if (await isModelReady()) return;
+    final completer = Completer<void>();
+    late StreamSubscription sub;
+    sub = modelStatusStream().listen((event) {
+      final status = (event['status'] as String?) ?? 'UNKNOWN';
+      if (status == 'READY') {
+        _isReady = true;
+        if (!completer.isCompleted) completer.complete();
+        sub.cancel();
+      }
+      if (status == 'ERROR') {
+        if (!completer.isCompleted) {
+          completer.completeError(Exception('Model init error: ${event['message'] ?? ''}'));
+        }
+        sub.cancel();
+      }
+    });
+    // Also ensure initialization is ongoing
+    await initializeModel();
+    await completer.future.timeout(timeout, onTimeout: () {
+      sub.cancel();
+      throw TimeoutException('Timed out waiting for model to be ready');
+    });
+  }
 
   /// Resets the session and generates a response from a prompt and image.
   /// Returns a Future that completes with the response Stream.
@@ -21,6 +97,8 @@ class LlmInference {
     required Uint8List image,
   }) async {
     try {
+      // Ensure model is ready first to avoid UI jank and errors
+      await waitUntilReady();
       await _methodChannel.invokeMethod('resetSession');
       return _generateResponseStream(prompt: prompt, image: image);
     } on PlatformException catch (e) {
