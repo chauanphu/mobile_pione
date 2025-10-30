@@ -22,12 +22,11 @@ class _CameraScreenState extends State<CameraScreen> {
   bool isCameraOpen = false;
   String? _cameraError;
   bool _cameraDetected = false;
-  bool _isAutoDetecting = false;
 
   // Services
   final LlmInference _llmInference = LlmInference.instance;
   late final TtsService _ttsService;
-  
+
   // Auto-detection timer
   Timer? _detectionTimer;
 
@@ -65,6 +64,11 @@ class _CameraScreenState extends State<CameraScreen> {
     cameraController.cameraStateCallback = (state) {
       setState(() {
         isCameraOpen = state == UVCCameraState.opened;
+        // Consider camera detected when it successfully opens
+        if (state == UVCCameraState.opened) {
+          _cameraDetected = true;
+          _cameraError = null;
+        }
       });
     };
 
@@ -94,63 +98,10 @@ class _CameraScreenState extends State<CameraScreen> {
       // Safe ignore if plugin API changed
     }
 
-    // Defer auto-detection until after first frame so the PlatformView is built
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      _startCameraAutoDetection();
-    });
+    // Auto-detection removed; camera can be opened manually via button
   }
 
-  /// Auto-detect UVC camera on USB connection with periodic polling
-  Future<void> _startCameraAutoDetection() async {
-    await cameraController.initializeCamera();
-    if (_isAutoDetecting) return;
-    setState(() {
-      _isAutoDetecting = true;
-    });
-
-    // Stop any existing timer
-    _detectionTimer?.cancel();
-
-    // Poll for camera every 2 seconds
-    _detectionTimer = Timer.periodic(
-      const Duration(seconds: 5),
-      (_) async {
-        try {
-          // Attempt to get camera features to verify camera presence
-          final features = await cameraController.getAllCameraFeatures();
-          final cameraFound = features != null;
-
-          if (cameraFound && !_cameraDetected) {
-            // Camera just detected!
-            setState(() {
-              _cameraDetected = true;
-              _cameraError = null;
-            });
-            await _ttsService.speak(
-              "UVC camera detected and ready. You can now capture images.",
-            );
-            debugPrint("✓ UVC Camera auto-detected!");
-          } else if (!cameraFound && _cameraDetected) {
-            // Camera was disconnected
-            setState(() {
-              _cameraDetected = false;
-              isCameraOpen = false;
-            });
-            await _ttsService.speak("UVC camera disconnected.");
-            debugPrint("✗ UVC Camera disconnected!");
-          }
-        } catch (e) {
-          // Silent fail - camera might not be ready yet
-          if (_cameraDetected) {
-            setState(() {
-              _cameraDetected = false;
-              isCameraOpen = false;
-            });
-          }
-        }
-      },
-    );
-  }
+  // Auto-detection function removed
 
   @override
   void dispose() {
@@ -176,20 +127,20 @@ class _CameraScreenState extends State<CameraScreen> {
       return;
     }
 
-    if (!_cameraDetected) {
-      await _ttsService.speak("No UVC camera detected. Please connect a camera.");
-      setState(() {
-        _cameraError = "Camera not detected. Please connect a UVC camera.";
-      });
-      return;
-    }
-
     setState(() {
       _cameraError = null;
     });
     try {
+      // Ensure platform side is initialized before opening
+      await cameraController.initializeCamera();
       await cameraController.openUVCCamera();
-      await _ttsService.speak("Camera opened successfully.");
+      // Mark as detected on successful invocation; actual OPENED state will update isCameraOpen
+      if (mounted) {
+        setState(() {
+          _cameraDetected = true;
+        });
+      }
+      await _ttsService.speak("Opening camera...");
     } catch (e) {
       setState(() {
         _cameraError = 'Failed to open UVC camera: $e';
@@ -204,7 +155,9 @@ class _CameraScreenState extends State<CameraScreen> {
     final statuses = await toRequest.request();
     final camGranted = statuses[Permission.camera]?.isGranted ?? false;
     if (!camGranted) {
-      await _ttsService.speak("Camera permission is required to use the UVC camera.");
+      await _ttsService.speak(
+        "Camera permission is required to use the UVC camera.",
+      );
       return false;
     }
     return true;
@@ -217,7 +170,9 @@ class _CameraScreenState extends State<CameraScreen> {
       } else if (_isLoading) {
         await _ttsService.speak("Already processing. Tap stop to cancel.");
       } else {
-        await _ttsService.speak("Camera not ready. Please open the camera first.");
+        await _ttsService.speak(
+          "Camera not ready. Please open the camera first.",
+        );
       }
       return;
     }
@@ -238,7 +193,8 @@ class _CameraScreenState extends State<CameraScreen> {
       );
 
       final captionStream = await _llmInference.generateCaptionStream(
-        prompt: 'Describe the following scene to identify the objects or obstacles for visual impaired user.',
+        prompt:
+            'Describe the following scene to identify the objects or obstacles for visual impaired user.',
         image: imageBytes,
       );
 
@@ -296,7 +252,9 @@ class _CameraScreenState extends State<CameraScreen> {
       int? breakIndex;
       for (int i = 0; i < _wordBuffer.length; i++) {
         String word = _wordBuffer[i].toLowerCase().trim();
-        String lastChar = word.isNotEmpty ? word.substring(word.length - 1) : '';
+        String lastChar = word.isNotEmpty
+            ? word.substring(word.length - 1)
+            : '';
         if ('.?!'.contains(lastChar)) {
           breakIndex = i;
           break;
@@ -438,7 +396,9 @@ class _CameraScreenState extends State<CameraScreen> {
               child: const Text('Open Camera'),
             ),
             ElevatedButton(
-              onPressed: isCameraOpen ? () => cameraController.closeCamera() : null,
+              onPressed: isCameraOpen
+                  ? () => cameraController.closeCamera()
+                  : null,
               child: const Text('Close Camera'),
             ),
             ElevatedButton(
@@ -456,23 +416,7 @@ class _CameraScreenState extends State<CameraScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: Row(
-          children: [
-            const Text('UVC Visual Assistant'),
-            const SizedBox(width: 12),
-            _cameraDetected
-                ? const Chip(
-                    label: Text('Camera Connected'),
-                    backgroundColor: Colors.green,
-                    labelStyle: TextStyle(color: Colors.white, fontSize: 12),
-                  )
-                : const Chip(
-                    label: Text('Waiting for Camera...'),
-                    backgroundColor: Colors.orange,
-                    labelStyle: TextStyle(color: Colors.white, fontSize: 12),
-                  ),
-          ],
-        ),
+        title: Row(children: [const Text('UVC Visual Assistant')]),
       ),
       body: Stack(
         fit: StackFit.expand,
