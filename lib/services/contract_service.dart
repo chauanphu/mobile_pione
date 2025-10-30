@@ -5,7 +5,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:http/http.dart';
 import 'package:web3dart/crypto.dart';
-import 'package:web3dart/web3dart.dart';
 import 'wallet_service.dart';
 import 'package:reown_appkit/reown_appkit.dart';
 
@@ -13,7 +12,7 @@ class ContractService {
   // --- Configuration - Replace with your details ---
   static const String _rpcUrl = 'https://rpc.zeroscan.org'; // Your RPC URL
   static const String _contractAddress =
-      '0x8fbB5515aC9df7BdbB6A1AeBF6899Ae72Ef2f60B';
+      '0x3dB9B536f4F27606B4892fbB02aDA6218A5bfa00';
   // -------------------------------------------------
 
   static late Web3Client _web3client;
@@ -147,13 +146,13 @@ class ContractService {
       if (details.isEmpty) return null;
       return {
         'id': details[0] as BigInt,
-        'state': details[1] as int,
+        'state': (details[1] as BigInt).toInt(),
         'globalModelCID': details[2] as String,
-        'currentRound': details[3] as int,
-        'totalRounds': details[4] as int,
+        'currentRound': (details[3] as BigInt).toInt(),
+        'totalRounds': (details[4] as BigInt).toInt(),
         'submissionDeadline': details[5] as BigInt,
-        'minSubmissions': details[6] as int,
-        'submissionCounter': details[7] as int,
+        'minSubmissions': (details[6] as BigInt).toInt(),
+        'submissionCounter': (details[7] as BigInt).toInt(),
       };
     } catch (e) {
       debugPrint('Error fetching campaign details: $e');

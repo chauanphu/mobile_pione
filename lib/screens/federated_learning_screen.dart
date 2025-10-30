@@ -34,6 +34,9 @@ class _FederatedLearningScreenState extends State<FederatedLearningScreen> {
 
   // WebSocket connection status
   bool _isPresenceConnected = false;
+  
+  // Track stream subscriptions for cancellation
+  dynamic _roundStreamSubscription;
 
   @override
   void initState() {
@@ -43,7 +46,8 @@ class _FederatedLearningScreenState extends State<FederatedLearningScreen> {
 
   @override
   void dispose() {
-    // Disconnect websocket on screen dispose
+    // Cancel stream subscription and disconnect websocket on screen dispose
+    _roundStreamSubscription?.cancel();
     _disconnectPresenceServer();
     super.dispose();
   }
@@ -92,6 +96,12 @@ class _FederatedLearningScreenState extends State<FederatedLearningScreen> {
   }
 
   void _connectToPresenceServer() {
+    // Avoid establishing a new connection if already connected
+    if (_isPresenceConnected && _presenceChannel != null) {
+      debugPrint("Already connected to presence server");
+      return;
+    }
+
     try {
       _presenceChannel = WebSocketChannel.connect(
         Uri.parse(_presenceServerUrl),
@@ -139,7 +149,7 @@ class _FederatedLearningScreenState extends State<FederatedLearningScreen> {
     _connectToPresenceServer();
 
     // Listen to NewRoundStarted events
-    ContractService().newRoundStartedStream.listen(
+    _roundStreamSubscription = ContractService().newRoundStartedStream.listen(
       (eventData) {
         // Event structure: [campaignId, roundNumber, initialModelCID, ...]
         if (eventData.length >= 3) {
@@ -171,6 +181,23 @@ class _FederatedLearningScreenState extends State<FederatedLearningScreen> {
       _statusMessage = _isPresenceConnected
           ? 'Listening for submission event...'
           : 'Waiting for new training round...';
+      _isTraining = true;
+    });
+  }
+
+  void _cancelTraining() {
+    // Cancel the round stream subscription
+    _roundStreamSubscription?.cancel();
+    _roundStreamSubscription = null;
+    
+    // Disconnect from presence server
+    _disconnectPresenceServer();
+    
+    setState(() {
+      _isTraining = false;
+      _progress = 0.0;
+      _statusMessage = 'Training cancelled. Ready to join training again.';
+      _currentModelCIDForTraining = null;
     });
   }
 
@@ -350,8 +377,11 @@ class _FederatedLearningScreenState extends State<FederatedLearningScreen> {
               Text(_statusMessage, textAlign: TextAlign.center),
               const SizedBox(height: 30),
               ElevatedButton(
-                onPressed: _isTraining ? null : _startTrainingAndSubmission,
-                child: Text(_isTraining ? 'Training...' : 'Join Training'),
+                onPressed: _isTraining ? _cancelTraining : _startTrainingAndSubmission,
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: _isTraining ? Colors.red : Colors.blue,
+                ),
+                child: Text(_isTraining ? 'Cancel' : 'Join Training'),
               ),
             ],
           ),
