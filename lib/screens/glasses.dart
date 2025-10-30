@@ -5,6 +5,7 @@ import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_uvc_camera/flutter_uvc_camera.dart';
+import 'package:permission_handler/permission_handler.dart';
 
 import '../services/llm_inference.dart';
 import '../services/tts_service.dart';
@@ -167,6 +168,14 @@ class _CameraScreenState extends State<CameraScreen> {
   }
 
   Future<void> _openCamera() async {
+    // Ensure runtime permissions like CAMERA (even if not strictly required for UVC,
+    // some OEMs/plugins still expect it); this won't grant USB device permission,
+    // which is handled via UsbManager/intent.
+    final hasPerms = await _ensureRuntimePermissions();
+    if (!hasPerms) {
+      return;
+    }
+
     if (!_cameraDetected) {
       await _ttsService.speak("No UVC camera detected. Please connect a camera.");
       setState(() {
@@ -187,6 +196,18 @@ class _CameraScreenState extends State<CameraScreen> {
       });
       await _ttsService.speak('Failed to open camera: $e');
     }
+  }
+
+  Future<bool> _ensureRuntimePermissions() async {
+    final toRequest = <Permission>[Permission.camera];
+
+    final statuses = await toRequest.request();
+    final camGranted = statuses[Permission.camera]?.isGranted ?? false;
+    if (!camGranted) {
+      await _ttsService.speak("Camera permission is required to use the UVC camera.");
+      return false;
+    }
+    return true;
   }
 
   Future<void> _describeSurroundings() async {

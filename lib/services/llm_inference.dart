@@ -33,6 +33,17 @@ class LlmInference {
     }
   }
 
+  /// Close native model resources. After this, model will need re-initialization.
+  Future<void> closeModel() async {
+    try {
+      await _methodChannel.invokeMethod('closeModel');
+      _isReady = false;
+    } on PlatformException catch (e) {
+      // ignore: avoid_print
+      print('closeModel error: ${e.message}');
+    }
+  }
+
   /// Returns true when the native model is loaded and ready.
   Future<bool> isModelReady() async {
     if (_isReady) return true;

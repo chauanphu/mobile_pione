@@ -129,6 +129,10 @@ class _CaptureScreenState extends State<CaptureScreen>
     _captionSubscription?.cancel();
     _ttsService.dispose();
     _statusSubscription?.cancel();
+    // Request native model cleanup when the screen is disposed.
+    // Fire-and-forget: it's okay to not await here because dispose() is sync.
+    // ignore: unawaited_futures
+    _llmInference.closeModel();
     _cameraController?.dispose(); // Safely dispose the controller
     super.dispose();
   }

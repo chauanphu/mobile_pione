@@ -65,6 +65,21 @@ class MainActivity : FlutterActivity() {
                     startModelInitializationIfNeeded()
                     result.success("started")
                 }
+                "closeModel" -> {
+                    // Close native model resources in background
+                    backgroundExecutor.execute {
+                        try {
+                            inferenceModel.close()
+                            // Mark as uninitialized after close
+                            emitStatus(ModelStatus.UNINITIALIZED, "Model closed")
+                            runOnUiThread { result.success(true) }
+                        } catch (e: Exception) {
+                            runOnUiThread {
+                                result.error("CLOSE_ERROR", "Failed to close model", e.toString())
+                            }
+                        }
+                    }
+                }
                 "getModelStatus" -> {
                     result.success(modelStatus.name)
                 }
