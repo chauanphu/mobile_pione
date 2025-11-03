@@ -9,6 +9,7 @@ import 'package:permission_handler/permission_handler.dart';
 import '../services/llm_inference.dart';
 import '../services/tts_service.dart';
 import '../services/speech_chunker.dart';
+import '../services/voice_command_service.dart';
 
 class CameraScreen extends StatefulWidget {
   const CameraScreen({super.key});

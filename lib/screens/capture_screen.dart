@@ -8,6 +8,7 @@ import 'package:flutter/material.dart';
 import '../services/llm_inference.dart';
 import '../services/tts_service.dart';
 import '../services/speech_chunker.dart';
+import '../services/voice_command_service.dart';
 
 class CaptureScreen extends StatefulWidget {
   const CaptureScreen({super.key});
@@ -31,6 +32,7 @@ class _CaptureScreenState extends State<CaptureScreen>
   // Services
   final LlmInference _llmInference = LlmInference.instance;
   late final TtsService _ttsService;
+  late final VoiceCommandService _voiceCommandService;
   StreamSubscription<Map<String, dynamic>>? _statusSubscription;
 
   // UI State
@@ -47,7 +49,7 @@ class _CaptureScreenState extends State<CaptureScreen>
   // Chunking via shared helper
   late final SpeechChunker _speechChunker;
 
-  // Chunking constants (unchanged)
+  // Chunking constants (unged)
   // Removed local chunking constants in favor of SpeechChunker
 
   @override
@@ -67,6 +69,29 @@ class _CaptureScreenState extends State<CaptureScreen>
         }
       },
     );
+    
+    // Initialize voice command service
+    _voiceCommandService = VoiceCommandService(
+      onCommandRecognized: (command) async {
+        debugPrint('Voice command detected: $command');
+        await _ttsService.speak("Command received. Capturing image.");
+        await _describeSurroundings();
+      },
+      onListeningStarted: () {
+        debugPrint('Voice listening started');
+      },
+      onListeningStopped: () {
+        debugPrint('Voice listening stopped');
+      },
+      onError: (error) async {
+        debugPrint('Voice command error: $error');
+        await _ttsService.speak('Voice recognition error occurred.');
+      },
+    );
+    
+    // Start voice listening
+    _initializeVoiceCommands();
+    
     // MODIFIED: Call the robust initialization method
     _initializeControllerFuture = _initializeCamera();
 
@@ -87,6 +112,18 @@ class _CaptureScreenState extends State<CaptureScreen>
         await _ttsService.speak('Model failed to load. Please restart the app.');
       }
     });
+  }
+
+  Future<void> _initializeVoiceCommands() async {
+    final initialized = await _voiceCommandService.initialize();
+    if (initialized) {
+      await _voiceCommandService.startListening();
+      await _ttsService.speak(
+        'Voice commands enabled. Say "Hey Vision, describe in front of me" to capture.',
+      );
+    } else {
+      await _ttsService.speak('Voice commands are not available on this device.');
+    }
   }
 
   // MODIFIED: Refactored camera initialization to be more robust
@@ -130,6 +167,7 @@ class _CaptureScreenState extends State<CaptureScreen>
   void dispose() {
     _captionSubscription?.cancel();
     _ttsService.dispose();
+    _voiceCommandService.dispose();
     _statusSubscription?.cancel();
     // Request native model cleanup when the screen is disposed.
     // Fire-and-forget: it's okay to not await here because dispose() is sync.
@@ -343,6 +381,57 @@ class _CaptureScreenState extends State<CaptureScreen>
               backgroundColor: _isLoading ? Colors.red : Colors.grey,
               tooltip: 'Stop current process',
               child: const Icon(Icons.stop),
+            ),
+          ),
+
+          // 6. Voice listening indicator at the top
+          if (_voiceCommandService.isListening)
+            Positioned(
+              top: 16.0,
+              left: 16.0,
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                decoration: BoxDecoration(
+                  color: Colors.red.withValues(alpha: 0.8),
+                  borderRadius: BorderRadius.circular(20),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: const [
+                    Icon(Icons.mic, color: Colors.white, size: 16),
+                    SizedBox(width: 4),
+                    Text(
+                      'Listening...',
+                      style: TextStyle(color: Colors.white, fontSize: 12),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+
+          // 7. Voice toggle button at the top right
+          Positioned(
+            top: 16.0,
+            right: 16.0,
+            child: FloatingActionButton(
+              heroTag: 'voiceToggleButton',
+              mini: true,
+              onPressed: () async {
+                await _voiceCommandService.toggleListening();
+                setState(() {}); // Update UI
+                if (_voiceCommandService.isListening) {
+                  await _ttsService.speak('Voice commands enabled.');
+                } else {
+                  await _ttsService.speak('Voice commands disabled.');
+                }
+              },
+              backgroundColor: _voiceCommandService.isListening 
+                  ? Colors.red 
+                  : Colors.grey,
+              tooltip: 'Toggle voice commands',
+              child: Icon(
+                _voiceCommandService.isListening ? Icons.mic : Icons.mic_off,
+              ),
             ),
           ),
         ],
