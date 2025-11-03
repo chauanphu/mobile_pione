@@ -1,6 +1,5 @@
 // FILE: lib/screens/capture_screen.dart
 import 'dart:async';
-import 'dart:collection';
 import 'dart:typed_data';
 
 import 'package:camera/camera.dart';
@@ -8,6 +7,7 @@ import 'package:flutter/material.dart';
 
 import '../services/llm_inference.dart';
 import '../services/tts_service.dart';
+import '../services/speech_chunker.dart';
 
 class CaptureScreen extends StatefulWidget {
   const CaptureScreen({super.key});
@@ -44,27 +44,29 @@ class _CaptureScreenState extends State<CaptureScreen>
   String _debugOutput = "Model output will appear here...";
   final ScrollController _debugScrollController = ScrollController();
 
-  // Chunking state
-  final List<String> _wordBuffer = [];
-  final Queue<String> _speechQueue = Queue<String>();
-  bool _isSpeaking = false;
+  // Chunking via shared helper
+  late final SpeechChunker _speechChunker;
 
   // Chunking constants (unchanged)
-  static const int MIN_WEAK_BREAK_WORDS = 5;
-  static const int FAILSAFE_CHUNK_SIZE = 15;
-  static const Set<String> _weakBreakWords = {
-    'and',
-    'but',
-    'so',
-    'or',
-    'because',
-    'while',
-  };
+  // Removed local chunking constants in favor of SpeechChunker
 
   @override
   void initState() {
     super.initState();
     _ttsService = TtsService();
+    _speechChunker = SpeechChunker(
+      _ttsService,
+      onAllDone: () async {
+        if (!_isLoading) {
+          await _ttsService.speak("Done. You can now capture new image.");
+          if (mounted) {
+            setState(() {
+              _debugOutput = "Model output will appear here...";
+            });
+          }
+        }
+      },
+    );
     // MODIFIED: Call the robust initialization method
     _initializeControllerFuture = _initializeCamera();
 
@@ -186,16 +188,10 @@ class _CaptureScreenState extends State<CaptureScreen>
           _debugScrollController.jumpTo(
             _debugScrollController.position.maxScrollExtent,
           );
-
-          final newWords = partialResponse
-              .trim()
-              .split(' ')
-              .where((w) => w.isNotEmpty);
-          _wordBuffer.addAll(newWords);
-          _chunkAndQueueWords();
+          _speechChunker.addPartial(partialResponse);
         },
         onDone: () async {
-          _chunkAndQueueWords(forceChunk: true);
+          await _speechChunker.finalize();
           setState(() {
             _isLoading = false;
           });
@@ -220,7 +216,7 @@ class _CaptureScreenState extends State<CaptureScreen>
 
   Future<void> _stopAll() async {
     await _captionSubscription?.cancel();
-    _resetSpeech();
+    await _speechChunker.stop();
     if (_isLoading) {
       await _ttsService.speak("Stopped");
     }
@@ -231,71 +227,7 @@ class _CaptureScreenState extends State<CaptureScreen>
     });
     await _llmInference.resetSession();
   }
-
-  void _chunkAndQueueWords({bool forceChunk = false}) {
-    while (true) {
-      int? breakIndex;
-      for (int i = 0; i < _wordBuffer.length; i++) {
-        String word = _wordBuffer[i].toLowerCase().trim();
-        String lastChar = word.isNotEmpty
-            ? word.substring(word.length - 1)
-            : '';
-        if ('.?!'.contains(lastChar)) {
-          breakIndex = i;
-          break;
-        }
-        if (i >= MIN_WEAK_BREAK_WORDS) {
-          if (lastChar == ',' || _weakBreakWords.contains(word)) {
-            breakIndex = i;
-            break;
-          }
-        }
-      }
-      if (breakIndex == null && _wordBuffer.length > FAILSAFE_CHUNK_SIZE) {
-        breakIndex = FAILSAFE_CHUNK_SIZE - 1;
-      }
-      if (breakIndex == null && forceChunk && _wordBuffer.isNotEmpty) {
-        breakIndex = _wordBuffer.length - 1;
-      }
-      if (breakIndex != null) {
-        final chunk = _wordBuffer.sublist(0, breakIndex + 1).join(' ');
-        _speechQueue.add(chunk);
-        _wordBuffer.removeRange(0, breakIndex + 1);
-        _processSpeechQueue();
-      } else {
-        break;
-      }
-    }
-  }
-
-  Future<void> _processSpeechQueue() async {
-    if (_isSpeaking) return;
-    // If the queue of things to say is empty...
-    if (_speechQueue.isEmpty) {
-      if (!_isLoading) {
-        await _ttsService.speak("Done. You can now capture new image.");
-        if (mounted) {
-          // Check if the widget is still visible
-          setState(() {
-            _debugOutput = "Model output will appear here...";
-          });
-        }
-      }
-      return;
-    }
-    _isSpeaking = true;
-    final chunkToSpeak = _speechQueue.removeFirst();
-    await _ttsService.speak(chunkToSpeak);
-    _isSpeaking = false;
-    _processSpeechQueue();
-  }
-
-  void _resetSpeech() {
-    _ttsService.stop();
-    _speechQueue.clear();
-    _wordBuffer.clear();
-    _isSpeaking = false;
-  }
+  // Local chunking helpers removed; handled by SpeechChunker
 
   // MODIFIED: The main widget returned by the build method
   Widget _buildCameraView(BuildContext context) {

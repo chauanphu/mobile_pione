@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:collection';
 import 'dart:io';
 import 'dart:typed_data';
 
@@ -9,6 +8,7 @@ import 'package:permission_handler/permission_handler.dart';
 
 import '../services/llm_inference.dart';
 import '../services/tts_service.dart';
+import '../services/speech_chunker.dart';
 
 class CameraScreen extends StatefulWidget {
   const CameraScreen({super.key});
@@ -22,6 +22,8 @@ class _CameraScreenState extends State<CameraScreen> {
   bool isCameraOpen = false;
   String? _cameraError;
   bool _cameraDetected = false;
+  bool _modelReady = false;
+  bool _announcedLoading = false;
 
   // Services
   final LlmInference _llmInference = LlmInference.instance;
@@ -34,31 +36,27 @@ class _CameraScreenState extends State<CameraScreen> {
   bool _isLoading = false;
   final StringBuffer _captionBuffer = StringBuffer();
   StreamSubscription<String>? _captionSubscription;
+  StreamSubscription<Map<String, dynamic>>? _statusSubscription;
 
   // Debug output
   final ScrollController _debugScrollController = ScrollController();
 
-  // Chunking state
-  final List<String> _wordBuffer = [];
-  final Queue<String> _speechQueue = Queue<String>();
-  bool _isSpeaking = false;
-
-  static const int MIN_WEAK_BREAK_WORDS = 5;
-  static const int FAILSAFE_CHUNK_SIZE = 15;
-  static const Set<String> _weakBreakWords = {
-    'and',
-    'but',
-    'so',
-    'or',
-    'because',
-    'while',
-  };
+  // Shared chunker for streamed captions
+  late final SpeechChunker _speechChunker;
 
   @override
   void initState() {
     super.initState();
     cameraController = UVCCameraController();
     _ttsService = TtsService();
+    _speechChunker = SpeechChunker(
+      _ttsService,
+      onAllDone: () async {
+        if (!_isLoading) {
+          await _ttsService.speak("Done. You can now capture new image.");
+        }
+      },
+    );
 
     // Camera state callback
     cameraController.cameraStateCallback = (state) {
@@ -98,6 +96,24 @@ class _CameraScreenState extends State<CameraScreen> {
       // Safe ignore if plugin API changed
     }
 
+    // Initialize LLM model similar to capture_screen and subscribe to status
+    _llmInference.initializeModel();
+    _statusSubscription = _llmInference.modelStatusStream().listen((event) async {
+      final status = (event['status'] as String?) ?? 'UNKNOWN';
+      if (status == 'INITIALIZING' && !_announcedLoading) {
+        _announcedLoading = true;
+        await _ttsService.speak('Loading the vision model in the background. Please wait.');
+      }
+      if (status == 'READY') {
+        if (mounted) setState(() { _modelReady = true; });
+        await _ttsService.speak('Model is ready. Double tap to capture.');
+      }
+      if (status == 'ERROR') {
+        if (mounted) setState(() { _modelReady = false; });
+        await _ttsService.speak('Model failed to load. Please restart the app.');
+      }
+    });
+
     // Auto-detection removed; camera can be opened manually via button
   }
 
@@ -107,6 +123,7 @@ class _CameraScreenState extends State<CameraScreen> {
   void dispose() {
     _captionSubscription?.cancel();
     _ttsService.dispose();
+    _statusSubscription?.cancel();
     _detectionTimer?.cancel(); // Stop auto-detection
     try {
       cameraController.closeCamera();
@@ -164,6 +181,10 @@ class _CameraScreenState extends State<CameraScreen> {
   }
 
   Future<void> _describeSurroundings() async {
+    if (!_modelReady) {
+      await _ttsService.speak('Model is still loading. Please wait.');
+      return;
+    }
     if (_isLoading || !isCameraOpen) {
       if (_cameraError != null) {
         await _ttsService.speak("Camera error: $_cameraError");
@@ -204,16 +225,10 @@ class _CameraScreenState extends State<CameraScreen> {
           _debugScrollController.jumpTo(
             _debugScrollController.position.maxScrollExtent,
           );
-
-          final newWords = partialResponse
-              .trim()
-              .split(' ')
-              .where((w) => w.isNotEmpty);
-          _wordBuffer.addAll(newWords);
-          _chunkAndQueueWords();
+          _speechChunker.addPartial(partialResponse);
         },
         onDone: () async {
-          _chunkAndQueueWords(forceChunk: true);
+          await _speechChunker.finalize();
           setState(() {
             _isLoading = false;
           });
@@ -236,7 +251,7 @@ class _CameraScreenState extends State<CameraScreen> {
 
   Future<void> _stopAll() async {
     await _captionSubscription?.cancel();
-    _resetSpeech();
+    await _speechChunker.stop();
     if (_isLoading) {
       await _ttsService.speak("Stopped");
     }
@@ -246,69 +261,7 @@ class _CameraScreenState extends State<CameraScreen> {
     });
     await _llmInference.resetSession();
   }
-
-  void _chunkAndQueueWords({bool forceChunk = false}) {
-    while (true) {
-      int? breakIndex;
-      for (int i = 0; i < _wordBuffer.length; i++) {
-        String word = _wordBuffer[i].toLowerCase().trim();
-        String lastChar = word.isNotEmpty
-            ? word.substring(word.length - 1)
-            : '';
-        if ('.?!'.contains(lastChar)) {
-          breakIndex = i;
-          break;
-        }
-        if (i >= MIN_WEAK_BREAK_WORDS) {
-          if (lastChar == ',' || _weakBreakWords.contains(word)) {
-            breakIndex = i;
-            break;
-          }
-        }
-      }
-      if (breakIndex == null && _wordBuffer.length > FAILSAFE_CHUNK_SIZE) {
-        breakIndex = FAILSAFE_CHUNK_SIZE - 1;
-      }
-      if (breakIndex == null && forceChunk && _wordBuffer.isNotEmpty) {
-        breakIndex = _wordBuffer.length - 1;
-      }
-      if (breakIndex != null) {
-        final chunk = _wordBuffer.sublist(0, breakIndex + 1).join(' ');
-        _speechQueue.add(chunk);
-        _wordBuffer.removeRange(0, breakIndex + 1);
-        _processSpeechQueue();
-      } else {
-        break;
-      }
-    }
-  }
-
-  Future<void> _processSpeechQueue() async {
-    if (_isSpeaking) return;
-    if (_speechQueue.isEmpty) {
-      if (!_isLoading) {
-        await _ttsService.speak("Done. You can now capture new image.");
-        if (mounted) {
-          setState(() {
-            // Processing complete
-          });
-        }
-      }
-      return;
-    }
-    _isSpeaking = true;
-    final chunkToSpeak = _speechQueue.removeFirst();
-    await _ttsService.speak(chunkToSpeak);
-    _isSpeaking = false;
-    _processSpeechQueue();
-  }
-
-  void _resetSpeech() {
-    _ttsService.stop();
-    _speechQueue.clear();
-    _wordBuffer.clear();
-    _isSpeaking = false;
-  }
+  // Local chunking code replaced by SpeechChunker
 
   Widget _buildCameraView(BuildContext context) {
     if (_cameraError != null) {
@@ -349,10 +302,13 @@ class _CameraScreenState extends State<CameraScreen> {
               SizedBox(
                 width: 300,
                 height: 300,
-                child: UVCCameraView(
-                  cameraController: cameraController,
-                  width: 300,
-                  height: 300,
+                child: RotatedBox(
+                  quarterTurns: 3, // 90° counter-clockwise
+                  child: UVCCameraView(
+                    cameraController: cameraController,
+                    width: 300,
+                    height: 300,
+                  ),
                 ),
               ),
               if (!_cameraDetected)
@@ -389,22 +345,12 @@ class _CameraScreenState extends State<CameraScreen> {
         ),
         const SizedBox(height: 8),
         Row(
-          mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+          mainAxisAlignment: MainAxisAlignment.center,
           children: [
             ElevatedButton(
               onPressed: isCameraOpen ? null : _openCamera,
               child: const Text('Open Camera'),
-            ),
-            ElevatedButton(
-              onPressed: isCameraOpen
-                  ? () => cameraController.closeCamera()
-                  : null,
-              child: const Text('Close Camera'),
-            ),
-            ElevatedButton(
-              onPressed: isCameraOpen ? _describeSurroundings : null,
-              child: const Text('Capture & Describe'),
-            ),
+            )
           ],
         ),
         const SizedBox(height: 8),
