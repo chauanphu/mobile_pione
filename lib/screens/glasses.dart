@@ -6,10 +6,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter_uvc_camera/flutter_uvc_camera.dart';
 import 'package:permission_handler/permission_handler.dart';
 
-import '../services/llm_inference.dart';
+import '../services/yolo_service.dart';
 import '../services/tts_service.dart';
-import '../services/speech_chunker.dart';
-import '../services/voice_command_service.dart';
 
 class CameraScreen extends StatefulWidget {
   const CameraScreen({super.key});
@@ -24,40 +22,22 @@ class _CameraScreenState extends State<CameraScreen> {
   String? _cameraError;
   bool _cameraDetected = false;
   bool _modelReady = false;
-  bool _announcedLoading = false;
 
   // Services
-  final LlmInference _llmInference = LlmInference.instance;
+  final YoloService _yoloService = YoloService.instance;
   late final TtsService _ttsService;
 
   // Auto-detection timer
   Timer? _detectionTimer;
 
-  // UI / streaming state
+  // UI state
   bool _isLoading = false;
-  final StringBuffer _captionBuffer = StringBuffer();
-  StreamSubscription<String>? _captionSubscription;
-  StreamSubscription<Map<String, dynamic>>? _statusSubscription;
-
-  // Debug output
-  final ScrollController _debugScrollController = ScrollController();
-
-  // Shared chunker for streamed captions
-  late final SpeechChunker _speechChunker;
 
   @override
   void initState() {
     super.initState();
     cameraController = UVCCameraController();
     _ttsService = TtsService();
-    _speechChunker = SpeechChunker(
-      _ttsService,
-      onAllDone: () async {
-        if (!_isLoading) {
-          await _ttsService.speak("Done. You can now capture new image.");
-        }
-      },
-    );
 
     // Camera state callback
     cameraController.cameraStateCallback = (state) {
@@ -97,34 +77,33 @@ class _CameraScreenState extends State<CameraScreen> {
       // Safe ignore if plugin API changed
     }
 
-    // Initialize LLM model similar to capture_screen and subscribe to status
-    _llmInference.initializeModel();
-    _statusSubscription = _llmInference.modelStatusStream().listen((event) async {
-      final status = (event['status'] as String?) ?? 'UNKNOWN';
-      if (status == 'INITIALIZING' && !_announcedLoading) {
-        _announcedLoading = true;
-        await _ttsService.speak('Loading the vision model in the background. Please wait.');
-      }
-      if (status == 'READY') {
-        if (mounted) setState(() { _modelReady = true; });
-        await _ttsService.speak('Model is ready. Double tap to capture.');
-      }
-      if (status == 'ERROR') {
-        if (mounted) setState(() { _modelReady = false; });
-        await _ttsService.speak('Model failed to load. Please restart the app.');
-      }
-    });
+    // Initialize YOLO model
+    _initializeYoloModel();
 
     // Auto-detection removed; camera can be opened manually via button
+  }
+
+  Future<void> _initializeYoloModel() async {
+    try {
+      await _ttsService.speak('Loading the YOLO vision model. Please wait.');
+      await _yoloService.initializeModel();
+      if (mounted) {
+        setState(() { _modelReady = true; });
+      }
+      await _ttsService.speak('Model is ready. Double tap to capture.');
+    } catch (e) {
+      if (mounted) {
+        setState(() { _modelReady = false; });
+      }
+      await _ttsService.speak('Model failed to load. Error: $e');
+    }
   }
 
   // Auto-detection function removed
 
   @override
   void dispose() {
-    _captionSubscription?.cancel();
     _ttsService.dispose();
-    _statusSubscription?.cancel();
     _detectionTimer?.cancel(); // Stop auto-detection
     try {
       cameraController.closeCamera();
@@ -132,7 +111,6 @@ class _CameraScreenState extends State<CameraScreen> {
     try {
       cameraController.dispose();
     } catch (_) {}
-    _debugScrollController.dispose();
     super.dispose();
   }
 
@@ -211,39 +189,23 @@ class _CameraScreenState extends State<CameraScreen> {
       final Uint8List imageBytes = await File(path).readAsBytes();
 
       await _ttsService.speak(
-        "Image captured. Analyzing. The process may take 10 to 15 seconds.",
+        "Image captured. Analyzing with YOLO model.",
       );
 
-      final captionStream = await _llmInference.generateCaptionStream(
-        prompt:
-            'Describe the following scene to identify the objects or obstacles for visual impaired user.',
-        image: imageBytes,
-      );
-
-      _captionSubscription = captionStream.listen(
-        (partialResponse) {
-          _captionBuffer.write(partialResponse);
-          _debugScrollController.jumpTo(
-            _debugScrollController.position.maxScrollExtent,
-          );
-          _speechChunker.addPartial(partialResponse);
-        },
-        onDone: () async {
-          await _speechChunker.finalize();
-          setState(() {
-            _isLoading = false;
-          });
-        },
-        onError: (error) async {
-          await _ttsService.speak('An error occurred during analysis.');
-          setState(() {
-            _isLoading = false;
-          });
-        },
-      );
+      // Use YOLO for object detection
+      final detections = await _yoloService.detectObjects(imageBytes);
+      
+      // Generate description from detections
+      final description = _yoloService.generateDescription(detections);
+      
+      // Speak the description
+      await _ttsService.speak(description);
+      
+      setState(() {
+        _isLoading = false;
+      });
     } catch (e) {
-      await _ttsService.speak('Failed to capture image. Please try again.');
-      await _llmInference.resetSession();
+      await _ttsService.speak('Failed to analyze image. Error: $e');
       setState(() {
         _isLoading = false;
       });
@@ -251,16 +213,13 @@ class _CameraScreenState extends State<CameraScreen> {
   }
 
   Future<void> _stopAll() async {
-    await _captionSubscription?.cancel();
-    await _speechChunker.stop();
+    await _ttsService.stop();
     if (_isLoading) {
       await _ttsService.speak("Stopped");
     }
     setState(() {
-      _captionBuffer.clear();
       _isLoading = false;
     });
-    await _llmInference.resetSession();
   }
   // Local chunking code replaced by SpeechChunker
 
