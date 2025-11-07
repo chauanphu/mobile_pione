@@ -3,6 +3,7 @@ package com.example.mobile_pione
 
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.util.Log
 import androidx.annotation.NonNull
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
@@ -15,12 +16,18 @@ class MainActivity : FlutterActivity() {
     private val METHOD_CHANNEL_NAME = "com.example.mobile_pione/llm"
     private val EVENT_CHANNEL_NAME = "com.example.mobile_pione/llm_progress"
     private val STATUS_CHANNEL_NAME = "com.example.mobile_pione/llm_status"
+    private val YOLO_CHANNEL_NAME = "com.example.mobile_pione/yolo"
 
     private val inferenceModel: InferenceModel by lazy {
         InferenceModel.getInstance(applicationContext)
     }
+
+    private val yoloHandler: YoloOnnxHandler by lazy {
+        YoloOnnxHandler(applicationContext)
+    }
     
     private val backgroundExecutor = Executors.newSingleThreadExecutor()
+    private val yoloExecutor = Executors.newSingleThreadExecutor()
 
     // Model initialization state
     private enum class ModelStatus { UNINITIALIZED, INITIALIZING, READY, ERROR }
@@ -202,6 +209,76 @@ class MainActivity : FlutterActivity() {
                 }
             }
         )
+
+        val yoloChannel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, YOLO_CHANNEL_NAME)
+        yoloChannel.setMethodCallHandler { call, result ->
+            when (call.method) {
+                "initialize" -> {
+                    val assetPath = call.argument<String>("assetPath")
+                    val width = call.argument<Int>("inputWidth") ?: 640
+                    val height = call.argument<Int>("inputHeight") ?: 640
+                    if (assetPath.isNullOrEmpty()) {
+                        result.error("INVALID_ARGUMENT", "assetPath is required", null)
+                        return@setMethodCallHandler
+                    }
+
+                    yoloExecutor.execute {
+                        try {
+                            yoloHandler.initialize(assetPath, width, height)
+                            runOnUiThread { result.success(true) }
+                        } catch (e: Exception) {
+                            Log.e("MainActivity", "Failed to initialize YOLO", e)
+                            runOnUiThread {
+                                result.error(
+                                    "YOLO_INIT_ERROR",
+                                    e.message ?: "Failed to initialize YOLO",
+                                    e.toString(),
+                                )
+                            }
+                        }
+                    }
+                }
+                "detectObjects" -> {
+                    val imageBytes = call.argument<ByteArray>("image")
+                    val confidence = (call.argument<Double>("confidenceThreshold") ?: 0.25).toFloat()
+                    val iou = (call.argument<Double>("iouThreshold") ?: 0.45).toFloat()
+
+                    yoloExecutor.execute {
+                        try {
+                            val detections = yoloHandler.detectObjects(imageBytes, confidence, iou)
+                            runOnUiThread { result.success(detections) }
+                        } catch (e: Exception) {
+                            Log.e("MainActivity", "YOLO detection error", e)
+                            runOnUiThread {
+                                result.error(
+                                    "YOLO_DETECT_ERROR",
+                                    e.message ?: "YOLO detection failed",
+                                    e.toString(),
+                                )
+                            }
+                        }
+                    }
+                }
+                "dispose" -> {
+                    yoloExecutor.execute {
+                        try {
+                            yoloHandler.close()
+                            runOnUiThread { result.success(true) }
+                        } catch (e: Exception) {
+                            Log.e("MainActivity", "YOLO dispose error", e)
+                            runOnUiThread {
+                                result.error(
+                                    "YOLO_DISPOSE_ERROR",
+                                    e.message ?: "Failed to dispose YOLO",
+                                    e.toString(),
+                                )
+                            }
+                        }
+                    }
+                }
+                else -> result.notImplemented()
+            }
+        }
 
         // Proactively start model initialization in the background
         startModelInitializationIfNeeded()

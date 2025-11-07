@@ -45,7 +45,7 @@ dependencies:
   flutter_uvc_camera: ^1.0.0
   permission_handler: ^11.3.1
   speech_to_text: ^7.0.0 # For voice command recognition
-  ultralytics_yolo: ^0.1.39
+  image: ^4.3.0 # For image preprocessing
 dev_dependencies:
   flutter_test:
     sdk: flutter

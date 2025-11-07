@@ -47,6 +47,7 @@ dependencies {
     implementation("com.google.mediapipe:tasks-genai:0.10.27")
     implementation("com.google.mediapipe:tasks-core:0.10.29")
     implementation("androidx.concurrent:concurrent-futures:1.1.0")
+    implementation("com.microsoft.onnxruntime:onnxruntime-android:1.23.2")
     // implementation("org.jetbrains.kotlin:kotlin-stdlib-jdk8:$kotlin_version")
 }
 
