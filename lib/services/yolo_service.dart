@@ -1,5 +1,4 @@
 import 'dart:convert';
-import 'dart:typed_data';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart' show MethodChannel, rootBundle;
 
@@ -84,8 +83,11 @@ class YoloService {
       );
 
       if (result is! List) {
+        debugPrint('YOLO detectObjects: result is not a List, got ${result.runtimeType}');
         return const [];
       }
+
+      debugPrint('YOLO detectObjects: native returned ${result.length} raw results');
 
       final List<Map<String, dynamic>> detections = [];
       for (final entry in result) {
@@ -127,14 +129,6 @@ class YoloService {
         }
         if (imageHeight != null) {
           detection['imageHeight'] = imageHeight;
-        }
-
-        final maskRaw = rawMap['mask'];
-        if (maskRaw is List) {
-          detection['mask'] = maskRaw
-              .whereType<num>()
-              .map((value) => value.toDouble())
-              .toList(growable: false);
         }
 
         detections.add(detection);

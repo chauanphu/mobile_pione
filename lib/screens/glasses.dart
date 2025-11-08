@@ -8,95 +8,7 @@ import 'package:permission_handler/permission_handler.dart';
 
 import '../services/yolo_service.dart';
 import '../services/tts_service.dart';
-
-/// Custom painter to draw bounding boxes over detected objects
-class BoundingBoxPainter extends CustomPainter {
-  final List<Map<String, dynamic>> detections;
-  final Size imageSize;
-
-  BoundingBoxPainter({
-    required this.detections,
-    this.imageSize = const Size(320, 320),
-  });
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    if (detections.isEmpty) return;
-
-    final paint = Paint()
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 3.0;
-
-    final textPainter = TextPainter(
-      textDirection: TextDirection.ltr,
-      textAlign: TextAlign.left,
-    );
-
-    for (var detection in detections) {
-      // Extract bounding box coordinates
-      final box = detection['box'] as Map<String, dynamic>?;
-      if (box == null) continue;
-
-      final left = (box['x1'] as num?)?.toDouble() ?? 0.0;
-      final top = (box['y1'] as num?)?.toDouble() ?? 0.0;
-      final right = (box['x2'] as num?)?.toDouble() ?? 0.0;
-      final bottom = (box['y2'] as num?)?.toDouble() ?? 0.0;
-
-      // Scale coordinates to widget size
-      final scaleX = size.width / imageSize.width;
-      final scaleY = size.height / imageSize.height;
-
-      final rect = Rect.fromLTRB(
-        left * scaleX,
-        top * scaleY,
-        right * scaleX,
-        bottom * scaleY,
-      );
-
-      // Draw bounding box with color based on confidence
-      final confidence = (detection['confidence'] as num?)?.toDouble() ?? 0.0;
-      paint.color = _getColorForConfidence(confidence);
-      canvas.drawRect(rect, paint);
-
-      // Draw label background
-      final label = detection['className'] as String? ?? 'unknown';
-      final confidencePercent = (confidence * 100).toInt();
-      final labelText = '$label $confidencePercent%';
-
-      textPainter.text = TextSpan(
-        text: labelText,
-        style: const TextStyle(
-          color: Colors.white,
-          fontSize: 14,
-          fontWeight: FontWeight.bold,
-          backgroundColor: Colors.black87,
-        ),
-      );
-      textPainter.layout();
-
-      // Position label above bounding box
-      final labelX = rect.left;
-      final labelY = rect.top - textPainter.height - 2;
-
-      textPainter.paint(
-        canvas,
-        Offset(labelX, labelY.clamp(0.0, size.height - textPainter.height)),
-      );
-    }
-  }
-
-  Color _getColorForConfidence(double confidence) {
-    if (confidence >= 0.8) return Colors.green;
-    if (confidence >= 0.6) return Colors.yellow;
-    if (confidence >= 0.4) return Colors.orange;
-    return Colors.red;
-  }
-
-  @override
-  bool shouldRepaint(BoundingBoxPainter oldDelegate) {
-    return detections != oldDelegate.detections;
-  }
-}
+import '../widgets/bounding_box_painter.dart';
 
 class CameraScreen extends StatefulWidget {
   const CameraScreen({super.key});
@@ -128,6 +40,10 @@ class _CameraScreenState extends State<CameraScreen> {
   
   // Current detections for bounding box visualization
   List<Map<String, dynamic>> _currentDetections = [];
+  Size _currentImageSize = Size(
+    YoloService.inputWidth.toDouble(),
+    YoloService.inputHeight.toDouble(),
+  );
 
   // UI state
   bool _isLoading = false;
@@ -247,15 +163,21 @@ class _CameraScreenState extends State<CameraScreen> {
       if (path == null) return;
       final Uint8List imageBytes = await File(path).readAsBytes();
 
-      await _ttsService.speak("Analyzing with YOLO model.");
+      // await _ttsService.speak("Analyzing with YOLO model.");
 
       // Use YOLO for object detection
       final detections = await _yoloService.detectObjects(imageBytes);
+      
+      debugPrint('YOLO detections: ${detections.length} objects found');
+      if (detections.isNotEmpty) {
+        debugPrint('First detection: ${detections.first}');
+      }
       
       // Update detections for bounding box visualization
       if (mounted) {
         setState(() {
           _currentDetections = detections;
+          _currentImageSize = _deriveImageSize(detections) ?? _currentImageSize;
         });
       }
       
@@ -275,6 +197,16 @@ class _CameraScreenState extends State<CameraScreen> {
         setState(() => _isLoading = false);
       }
     }
+  }
+
+  Size? _deriveImageSize(List<Map<String, dynamic>> detections) {
+    if (detections.isEmpty) return null;
+    final width = (detections.first['imageWidth'] as num?)?.toDouble();
+    final height = (detections.first['imageHeight'] as num?)?.toDouble();
+    if (width == null || height == null || width <= 0 || height <= 0) {
+      return null;
+    }
+    return Size(width, height);
   }
 
   @override
@@ -384,14 +316,14 @@ class _CameraScreenState extends State<CameraScreen> {
             alignment: Alignment.center,
             children: [
               SizedBox(
-                width: 320,
-                height: 320,
+                width: 640,
+                height: 640,
                 child: RotatedBox(
                   quarterTurns: 3, // 90° counter-clockwise
                   child: UVCCameraView(
                     cameraController: cameraController,
-                    width: 320,
-                    height: 320,
+                    width: 640,
+                    height: 640,
                   ),
                 ),
               ),
@@ -401,7 +333,7 @@ class _CameraScreenState extends State<CameraScreen> {
                   child: CustomPaint(
                     painter: BoundingBoxPainter(
                       detections: _currentDetections,
-                      imageSize: const Size(320, 320),
+                      imageSize: _currentImageSize,
                     ),
                   ),
                 ),
