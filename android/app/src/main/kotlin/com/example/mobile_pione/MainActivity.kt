@@ -215,6 +215,7 @@ class MainActivity : FlutterActivity() {
             when (call.method) {
                 "initialize" -> {
                     val assetPath = call.argument<String>("assetPath")
+                    val metadataPath = call.argument<String>("metadataPath")
                     val width = call.argument<Int>("inputWidth") ?: 640
                     val height = call.argument<Int>("inputHeight") ?: 640
                     if (assetPath.isNullOrEmpty()) {
@@ -224,7 +225,7 @@ class MainActivity : FlutterActivity() {
 
                     yoloExecutor.execute {
                         try {
-                            yoloHandler.initialize(assetPath, width, height)
+                            yoloHandler.initialize(assetPath, metadataPath, width, height)
                             runOnUiThread { result.success(true) }
                         } catch (e: Exception) {
                             Log.e("MainActivity", "Failed to initialize YOLO", e)
@@ -242,10 +243,11 @@ class MainActivity : FlutterActivity() {
                     val imageBytes = call.argument<ByteArray>("image")
                     val confidence = (call.argument<Double>("confidenceThreshold") ?: 0.25).toFloat()
                     val iou = (call.argument<Double>("iouThreshold") ?: 0.45).toFloat()
+                    val applyNms = call.argument<Boolean>("applyNms") ?: false
 
                     yoloExecutor.execute {
                         try {
-                            val detections = yoloHandler.detectObjects(imageBytes, confidence, iou)
+                            val detections = yoloHandler.detectObjects(imageBytes, confidence, iou, applyNms)
                             runOnUiThread { result.success(detections) }
                         } catch (e: Exception) {
                             Log.e("MainActivity", "YOLO detection error", e)

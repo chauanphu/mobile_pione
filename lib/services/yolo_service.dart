@@ -15,7 +15,7 @@ class YoloService {
 
   static const int inputWidth = 640;
   static const int inputHeight = 640;
-  static const double confidenceThreshold = 0.25;
+  static const double confidenceThreshold = 0.5;
   static const double iouThreshold = 0.45;
 
   bool get isInitialized => _isInitialized;
@@ -31,6 +31,7 @@ class YoloService {
 
       await _channel.invokeMethod<void>('initialize', {
         'assetPath': 'assets/model/yolo/yoloe-11m-seg-pf.onnx',
+        'metadataPath': 'assets/model/yolo/yoloe-11m-seg-pf.metadata.json',
         'inputWidth': inputWidth,
         'inputHeight': inputHeight,
       });
@@ -63,7 +64,10 @@ class YoloService {
     }
   }
 
-  Future<List<Map<String, dynamic>>> detectObjects(Uint8List imageBytes) async {
+  Future<List<Map<String, dynamic>>> detectObjects(
+    Uint8List imageBytes, {
+    bool applyNms = false,
+  }) async {
     if (!_isInitialized) {
       throw Exception('YOLO model not initialized. Call initializeModel() first.');
     }
@@ -75,6 +79,7 @@ class YoloService {
           'image': imageBytes,
           'confidenceThreshold': confidenceThreshold,
           'iouThreshold': iouThreshold,
+          'applyNms': applyNms,
         },
       );
 
@@ -91,25 +96,48 @@ class YoloService {
         );
 
         final classId = (rawMap['classId'] as num?)?.toInt();
-        final bboxRaw = rawMap['bbox'];
+        final className = rawMap['className']?.toString() ??
+            _classNames[classId?.toString() ?? ''] ??
+            'unknown';
+        final bboxRaw = rawMap['box'] ?? rawMap['bbox'];
         final confidence = (rawMap['confidence'] as num?)?.toDouble() ?? 0.0;
+        final imageWidth = (rawMap['imageWidth'] as num?)?.toInt();
+        final imageHeight = (rawMap['imageHeight'] as num?)?.toInt();
 
-        final Map<String, double> bbox = {};
+        final Map<String, double> box = {};
         if (bboxRaw is Map) {
           for (final bboxEntry in bboxRaw.entries) {
             final value = bboxEntry.value;
             if (value is num) {
-              bbox[bboxEntry.key.toString()] = value.toDouble();
+              box[bboxEntry.key.toString()] = value.toDouble();
             }
           }
         }
 
-        detections.add({
+        final detection = <String, dynamic>{
           'classId': classId ?? -1,
-          'className': _classNames[classId?.toString() ?? ''] ?? 'unknown',
+          'className': className,
           'confidence': confidence,
-          'bbox': bbox,
-        });
+          'box': box,
+          'bbox': Map<String, double>.from(box),
+        };
+
+        if (imageWidth != null) {
+          detection['imageWidth'] = imageWidth;
+        }
+        if (imageHeight != null) {
+          detection['imageHeight'] = imageHeight;
+        }
+
+        final maskRaw = rawMap['mask'];
+        if (maskRaw is List) {
+          detection['mask'] = maskRaw
+              .whereType<num>()
+              .map((value) => value.toDouble())
+              .toList(growable: false);
+        }
+
+        detections.add(detection);
       }
 
       return detections;
@@ -161,7 +189,7 @@ class YoloService {
     final confidencePercent = (confidence * 100).toInt();
     final className = topDetection['className'] as String? ?? 'unknown';
     description.write(' The most prominent object is $className with $confidencePercent percent confidence.');
-
+    debugPrint('Generated description: $description');
     return description.toString();
   }
 

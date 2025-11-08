@@ -122,6 +122,10 @@ class _CameraScreenState extends State<CameraScreen> {
   // Periodic detection timer (every 5 seconds)
   Timer? _periodicDetectionTimer;
   
+  // Cooldown timer (5 seconds after processing completes)
+  Timer? _cooldownTimer;
+  bool _inCooldown = false;
+  
   // Current detections for bounding box visualization
   List<Map<String, dynamic>> _currentDetections = [];
 
@@ -218,13 +222,32 @@ class _CameraScreenState extends State<CameraScreen> {
     _periodicDetectionTimer = null;
   }
 
+  void _startCooldown() {
+    _cooldownTimer?.cancel();
+    setState(() {
+      _inCooldown = true;
+    });
+    _cooldownTimer = Timer(const Duration(seconds: 5), () {
+      if (mounted) {
+        setState(() {
+          _inCooldown = false;
+        });
+      }
+      _cooldownTimer = null;
+    });
+  }
+
   Future<void> _runPeriodicDetection() async {
-    if (!_modelReady || !isCameraOpen) return;
+    if (!_modelReady || !isCameraOpen || _inCooldown) return;
+    
+    setState(() => _isLoading = true);
     await _ttsService.speak("Capture.");
     try {
       final String? path = await cameraController.takePicture();
       if (path == null) return;
       final Uint8List imageBytes = await File(path).readAsBytes();
+
+      await _ttsService.speak("Analyzing with YOLO model.");
 
       // Use YOLO for object detection
       final detections = await _yoloService.detectObjects(imageBytes);
@@ -239,10 +262,18 @@ class _CameraScreenState extends State<CameraScreen> {
       // Generate description from detections
       final description = _yoloService.generateDescription(detections);
       
-      // Speak the description
+      // Speak the description and wait for it to complete
       await _ttsService.speak(description);
+      
+      // Start 5-second cooldown after processing and TTS complete
+      _startCooldown();
     } catch (e) {
       debugPrint('Error during periodic detection: $e');
+      await _ttsService.speak('An error occurred during detection.');
+    } finally {
+      if (mounted) {
+        setState(() => _isLoading = false);
+      }
     }
   }
 

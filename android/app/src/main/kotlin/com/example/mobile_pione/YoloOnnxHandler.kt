@@ -14,6 +14,7 @@ import java.nio.FloatBuffer
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.max
 import kotlin.math.min
+import org.json.JSONObject
 import ai.onnxruntime.OnnxTensor
 import ai.onnxruntime.OrtEnvironment
 import ai.onnxruntime.OrtSession
@@ -26,9 +27,10 @@ class YoloOnnxHandler(private val context: Context) {
     private val initialized = AtomicBoolean(false)
     private var inputWidth: Int = 640
     private var inputHeight: Int = 640
+    private var classNames: Map<Int, String> = emptyMap()
 
     @Synchronized
-    fun initialize(assetPath: String, width: Int, height: Int) {
+    fun initialize(assetPath: String, metadataPath: String?, width: Int, height: Int) {
         if (initialized.get()) return
 
         val modelFile = loadModelFromAssets(assetPath)
@@ -46,6 +48,7 @@ class YoloOnnxHandler(private val context: Context) {
             inputName = firstInputName
             inputWidth = width
             inputHeight = height
+            classNames = metadataPath?.let { loadClassNames(it) } ?: emptyMap()
             initialized.set(true)
             Log.i(loggerTag, "YOLO ONNX session initialized with input $firstInputName")
         } finally {
@@ -58,6 +61,7 @@ class YoloOnnxHandler(private val context: Context) {
         imageBytes: ByteArray?,
         confidenceThreshold: Float,
         iouThreshold: Float,
+        shouldApplyNms: Boolean = false,
     ): List<Map<String, Any>> {
         if (!initialized.get() || session == null || inputName == null) {
             throw IllegalStateException("YOLO model not initialized")
@@ -88,23 +92,54 @@ class YoloOnnxHandler(private val context: Context) {
 
             val inputs = mapOf(inputName!! to inputTensor)
             result = session!!.run(inputs)
-            val onnxValue = result?.get(0)
-                ?: return emptyList()
+            val onnxValue = result?.get(0) ?: return emptyList()
 
             @Suppress("UNCHECKED_CAST")
             val rawOutput = onnxValue.value as? Array<Array<FloatArray>>
                 ?: return emptyList()
 
-            val detections = parseDetections(
-                rawOutput,
+            val batchOutput = rawOutput.firstOrNull() ?: return emptyList()
+            if (batchOutput.isEmpty()) return emptyList()
+
+            val predictions = convertRowsToPredictions(batchOutput)
+            if (predictions.isEmpty()) return emptyList()
+
+            val scaleX = originalWidth.toFloat() / inputWidth.toFloat()
+            val scaleY = originalHeight.toFloat() / inputHeight.toFloat()
+
+            val parsedDetections = buildDetections(
+                predictions,
                 confidenceThreshold,
-                iouThreshold,
+                scaleX,
+                scaleY,
                 originalWidth,
                 originalHeight,
             )
 
-            Log.d(loggerTag, "Parsed ${detections.size} detections from ONNX output")
-            return detections
+            val finalDetections = if (shouldApplyNms) {
+                applyNms(parsedDetections, iouThreshold)
+            } else {
+                parsedDetections
+            }
+
+            val resultMaps = finalDetections.map { det ->
+                val bboxMap = det.box.toMap()
+                buildMap<String, Any> {
+                    put("classId", det.classId)
+                    put("className", det.className)
+                    put("confidence", det.confidence.toDouble())
+                    put("box", bboxMap)
+                    put("bbox", bboxMap.toMutableMap())
+                    put("imageWidth", originalWidth)
+                    put("imageHeight", originalHeight)
+                    det.maskCoefficients?.takeIf { it.isNotEmpty() }?.let { mask ->
+                        put("mask", mask.map { value -> value.toDouble() })
+                    }
+                }
+            }
+
+            Log.d(loggerTag, "Parsed ${resultMaps.size} detections from ONNX output")
+            return resultMaps
         } finally {
             result?.close()
             inputTensor?.close()
@@ -121,6 +156,7 @@ class YoloOnnxHandler(private val context: Context) {
         } finally {
             session = null
             inputName = null
+            classNames = emptyMap()
         }
     }
 
@@ -149,6 +185,32 @@ class YoloOnnxHandler(private val context: Context) {
         }
 
         return targetFile
+    }
+
+    private fun loadClassNames(metadataAssetPath: String): Map<Int, String> {
+        val flutterLoader = FlutterInjector.instance().flutterLoader()
+        val assetKey = flutterLoader.getLookupKeyForAsset(metadataAssetPath)
+
+        return try {
+            context.assets.open(assetKey).use { inputStream ->
+                val jsonText = inputStream.bufferedReader().use { it.readText() }
+                val json = JSONObject(jsonText)
+                val namesJson = json.optJSONObject("names") ?: return emptyMap()
+                val keys = namesJson.keys()
+                buildMap {
+                    while (keys.hasNext()) {
+                        val key = keys.next()
+                        val classId = key.toIntOrNull()
+                        if (classId != null) {
+                            put(classId, namesJson.optString(key))
+                        }
+                    }
+                }
+            }
+        } catch (ioe: IOException) {
+            Log.w(loggerTag, "Failed to load metadata $metadataAssetPath", ioe)
+            emptyMap()
+        }
     }
 
     private fun preprocessBitmap(source: Bitmap): FloatBuffer {
@@ -186,82 +248,89 @@ class YoloOnnxHandler(private val context: Context) {
         return floatBuffer
     }
 
-    private fun parseDetections(
-        output: Array<Array<FloatArray>>,
+    private fun convertRowsToPredictions(rows: Array<FloatArray>): Array<FloatArray> {
+        if (rows.isEmpty()) return emptyArray()
+        val columnCount = rows[0].size
+        if (columnCount == 0) return emptyArray()
+
+        val rowCount = rows.size
+        val rowsRepresentPredictions = rowCount >= columnCount
+        if (rowsRepresentPredictions) {
+            return rows
+        }
+
+        val predictions = Array(columnCount) { FloatArray(rowCount) }
+        for (rowIndex in 0 until rowCount) {
+            val row = rows[rowIndex]
+            val limit = min(columnCount, row.size)
+            for (columnIndex in 0 until limit) {
+                predictions[columnIndex][rowIndex] = row[columnIndex]
+            }
+        }
+        return predictions
+    }
+
+    private fun buildDetections(
+        predictions: Array<FloatArray>,
         confidenceThreshold: Float,
-        iouThreshold: Float,
+        scaleX: Float,
+        scaleY: Float,
         originalWidth: Int,
         originalHeight: Int,
-    ): List<Map<String, Any>> {
-        if (output.isEmpty()) return emptyList()
-        val features = output[0]
-        if (features.isEmpty()) return emptyList()
+    ): List<Detection> {
+        if (predictions.isEmpty()) return emptyList()
 
-        val numFeatures = features.size
-        if (numFeatures < 5) return emptyList()
+        val detections = ArrayList<Detection>()
+        for (row in predictions) {
+            if (row.size < 6) continue
 
-        val numBoxes = features[0].size
-        val numClasses = numFeatures - 4
-        val detections = ArrayList<Detection>(numBoxes)
+            val confidence = row[4]
+            if (confidence < confidenceThreshold) continue
 
-        for (boxIdx in 0 until numBoxes) {
-            val xCenter = features[0][boxIdx]
-            val yCenter = features[1][boxIdx]
-            val width = features[2][boxIdx]
-            val height = features[3][boxIdx]
+            val classId = row[5].toInt().coerceAtLeast(0)
+            val className = classNames[classId] ?: "unknown"
 
-            var bestScore = Float.NEGATIVE_INFINITY
-            var bestClassId = -1
-            for (c in 0 until numClasses) {
-                val clsScore = features[4 + c][boxIdx]
-                if (clsScore > bestScore) {
-                    bestScore = clsScore
-                    bestClassId = c
-                }
+            val xCenter = row[0]
+            val yCenter = row[1]
+            val width = row[2]
+            val height = row[3]
+
+            val xMin = (xCenter - width / 2f) * scaleX
+            val yMin = (yCenter - height / 2f) * scaleY
+            val xMax = (xCenter + width / 2f) * scaleX
+            val yMax = (yCenter + height / 2f) * scaleY
+
+            val maxWidth = originalWidth.toFloat()
+            val maxHeight = originalHeight.toFloat()
+            val clampedXMin = xMin.coerceIn(0f, maxWidth)
+            val clampedYMin = yMin.coerceIn(0f, maxHeight)
+            val clampedXMax = xMax.coerceIn(0f, maxWidth)
+            val clampedYMax = yMax.coerceIn(0f, maxHeight)
+
+            val box = BoundingBox(
+                x1 = clampedXMin,
+                y1 = clampedYMin,
+                x2 = max(clampedXMax, clampedXMin),
+                y2 = max(clampedYMax, clampedYMin),
+            )
+
+            val maskCoefficients = if (row.size > 6) {
+                row.copyOfRange(6, row.size)
+            } else {
+                null
             }
-
-            if (bestClassId < 0 || bestScore < confidenceThreshold) {
-                continue
-            }
-
-            val xCenterPx = xCenter * originalWidth
-            val yCenterPx = yCenter * originalHeight
-            val widthPx = width * originalWidth
-            val heightPx = height * originalHeight
-
-            val x1 = (xCenterPx - widthPx / 2f).coerceIn(0f, originalWidth.toFloat())
-            val y1 = (yCenterPx - heightPx / 2f).coerceIn(0f, originalHeight.toFloat())
-            val x2 = (xCenterPx + widthPx / 2f).coerceIn(0f, originalWidth.toFloat())
-            val y2 = (yCenterPx + heightPx / 2f).coerceIn(0f, originalHeight.toFloat())
 
             detections.add(
                 Detection(
-                    classId = bestClassId,
-                    confidence = bestScore,
-                    box = BoundingBox(x1, y1, x2, y2),
+                    classId = classId,
+                    className = className,
+                    confidence = confidence,
+                    box = box,
+                    maskCoefficients = maskCoefficients,
                 ),
             )
         }
-
-        if (detections.isEmpty()) {
-            return emptyList()
-        }
-
-        val filtered = applyNms(detections, iouThreshold)
-        return filtered.map { det ->
-            mapOf(
-                "classId" to det.classId,
-                "confidence" to det.confidence.toDouble(),
-                "bbox" to mapOf(
-                    "x1" to det.box.x1.toDouble(),
-                    "y1" to det.box.y1.toDouble(),
-                    "x2" to det.box.x2.toDouble(),
-                    "y2" to det.box.y2.toDouble(),
-                    "width" to det.box.width().toDouble(),
-                    "height" to det.box.height().toDouble(),
-                ),
-            )
-        }
+        return detections
     }
 
     private fun applyNms(detections: List<Detection>, iouThreshold: Float): List<Detection> {
@@ -308,8 +377,10 @@ class YoloOnnxHandler(private val context: Context) {
 
     private data class Detection(
         val classId: Int,
+        val className: String,
         val confidence: Float,
         val box: BoundingBox,
+        val maskCoefficients: FloatArray? = null,
     )
 
     private data class BoundingBox(
@@ -321,5 +392,14 @@ class YoloOnnxHandler(private val context: Context) {
         fun width(): Float = (x2 - x1).coerceAtLeast(0f)
         fun height(): Float = (y2 - y1).coerceAtLeast(0f)
         fun area(): Float = width() * height()
+
+        fun toMap(): Map<String, Double> = mapOf(
+            "x1" to x1.toDouble(),
+            "y1" to y1.toDouble(),
+            "x2" to x2.toDouble(),
+            "y2" to y2.toDouble(),
+            "width" to width().toDouble(),
+            "height" to height().toDouble(),
+        )
     }
 }
