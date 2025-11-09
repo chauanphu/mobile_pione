@@ -3,13 +3,15 @@ package com.example.mobile_pione
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.Canvas
+import android.graphics.Color
+import android.graphics.Paint
+import android.graphics.RectF
 import android.util.Log
 import io.flutter.FlutterInjector
 import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
-import java.nio.ByteBuffer
-import java.nio.ByteOrder
 import java.nio.FloatBuffer
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.max
@@ -20,18 +22,17 @@ import ai.onnxruntime.OrtEnvironment
 import ai.onnxruntime.OrtSession
 
 /**
- * YOLOE ONNX Handler for object detection using ONNX Runtime
+ * Standard YOLO ONNX Handler for object detection using ONNX Runtime
  * 
  * Model Input:
  * - Shape: [1, 3, 640, 640] (batch, channels, height, width)
  * - Format: RGB, normalized [0, 1]
- * - Input name: "images"
+ * - Preprocessing: Letterbox with padding
  * 
  * Model Output:
- * - Output 0: [1, 300, 38] - Detection boxes (x_center, y_center, width, height, confidence, class_id, ...mask_coefficients)
- * - Output 1: [1, 32, 160, 160] - Feature maps for masking
- * 
- * Note: Model includes NMS, so post-processing NMS is optional
+ * - Shape: [1, NUM_OUTPUT_FEATURES, NUM_DETECTIONS]
+ * - Format: [x_center, y_center, width, height, class_scores...]
+ * - Requires transposition and NMS post-processing
  */
 class YoloOnnxHandler(private val context: Context) {
     private val loggerTag = "YoloOnnxHandler"
@@ -43,18 +44,14 @@ class YoloOnnxHandler(private val context: Context) {
     private var inputWidth: Int = 640
     private var inputHeight: Int = 640
     private var classNames: Map<Int, String> = emptyMap()
+    private var numClasses: Int = 80
+    private var numDetections: Int = 8400
     private val maxResults = 10
     
-    // YOLOE format constants
+    // Standard YOLO format constants
     private companion object {
-        const val INPUT_NAME = "images"
-        const val BOX_X_CENTER_INDEX = 0
-        const val BOX_Y_CENTER_INDEX = 1
-        const val BOX_WIDTH_INDEX = 2
-        const val BOX_HEIGHT_INDEX = 3
-        const val CONFIDENCE_INDEX = 4
-        const val CLASS_ID_INDEX = 5
-        const val MIN_BOX_ATTRIBUTES = 6
+        const val CONFIDENCE_THRESHOLD_DEFAULT = 0.25f
+        const val IOU_THRESHOLD_DEFAULT = 0.45f
     }
 
     @Synchronized
@@ -65,16 +62,26 @@ class YoloOnnxHandler(private val context: Context) {
         }
 
         val modelFile = AssetLoader(context).loadModelFromAssets(assetPath)
+        val metadata = metadataPath?.let { AssetLoader(context).loadMetadata(it) }
+        
         val sessionOptions = createSessionOptions()
 
         try {
             session = env.createSession(modelFile.absolutePath, sessionOptions)
             inputWidth = width
             inputHeight = height
-            classNames = metadataPath?.let { AssetLoader(context).loadClassNames(it) } ?: emptyMap()
+            
+            // Load metadata
+            metadata?.let {
+                classNames = it.classNames
+                numClasses = it.numClasses
+            } ?: run {
+                Log.w(loggerTag, "No metadata provided, using defaults")
+            }
+            
             initialized.set(true)
             Log.i(loggerTag, "YOLO ONNX session initialized successfully")
-            Log.d(loggerTag, "Input size: ${inputWidth}x${inputHeight}, Classes: ${classNames.size}")
+            Log.d(loggerTag, "Input size: ${inputWidth}x${inputHeight}, Classes: ${numClasses}, Detections: ${numDetections}")
         } finally {
             sessionOptions.close()
         }
@@ -93,27 +100,28 @@ class YoloOnnxHandler(private val context: Context) {
         imageBytes: ByteArray?,
         confidenceThreshold: Float,
         iouThreshold: Float,
-        shouldApplyNms: Boolean = false,
+        shouldApplyNms: Boolean = true,
     ): List<Map<String, Any>> {
         requireInitialized()
         require(imageBytes != null && imageBytes.isNotEmpty()) { "Image bytes are empty" }
 
         val bitmap = decodeBitmap(imageBytes)
-        val imageInfo = ImageInfo(bitmap.width, bitmap.height, inputWidth, inputHeight)
         
         return try {
-            val preprocessedImage = ImagePreprocessor.preprocess(bitmap, inputWidth, inputHeight)
-            val inferenceResult = runInference(preprocessedImage)
-            val detections = processInferenceOutput(inferenceResult, confidenceThreshold, imageInfo)
+            val preprocessResult = preprocessImage(bitmap)
+            val detections = runInference(
+                preprocessResult, 
+                bitmap.width, 
+                bitmap.height,
+                confidenceThreshold,
+                iouThreshold
+            )
             
-            val finalDetections = if (shouldApplyNms) {
-                NmsProcessor.applyNms(detections, iouThreshold)
-            } else {
-                detections
-            }.sortedByDescending { it.confidence }
+            val finalDetections = detections
+                .sortedByDescending { it.confidence }
                 .take(maxResults)
             
-            DetectionMapper.toMapList(finalDetections, imageInfo.originalWidth, imageInfo.originalHeight)
+            DetectionMapper.toMapList(finalDetections, bitmap.width, bitmap.height)
         } finally {
             bitmap.recycle()
         }
@@ -133,26 +141,92 @@ class YoloOnnxHandler(private val context: Context) {
             ?: throw IllegalArgumentException("Failed to decode image bytes")
     }
 
-    private fun runInference(preprocessedImage: FloatBuffer): InferenceOutput {
+    private fun preprocessImage(bitmap: Bitmap): PreprocessResult {
+        val originalWidth = bitmap.width
+        val originalHeight = bitmap.height
+
+        // Calculate letterbox scaling
+        val ratio = inputWidth.toFloat() / max(originalWidth, originalHeight)
+        val newWidth = (originalWidth * ratio).toInt()
+        val newHeight = (originalHeight * ratio).toInt()
+
+        val resizedBitmap = Bitmap.createScaledBitmap(bitmap, newWidth, newHeight, true)
+
+        // Create padded bitmap with gray background
+        val paddedBitmap = Bitmap.createBitmap(inputWidth, inputHeight, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(paddedBitmap)
+        val paint = Paint().apply { color = Color.rgb(128, 128, 128) }
+        canvas.drawRect(0f, 0f, inputWidth.toFloat(), inputHeight.toFloat(), paint)
+        
+        val padX = (inputWidth - newWidth) / 2f
+        val padY = (inputHeight - newHeight) / 2f
+        canvas.drawBitmap(resizedBitmap, padX, padY, null)
+
+        // Convert to CHW format (Channel-First) and normalize
+        val inputBuffer = FloatBuffer.allocate(3 * inputWidth * inputHeight)
+        val pixels = IntArray(inputWidth * inputHeight)
+        paddedBitmap.getPixels(pixels, 0, inputWidth, 0, 0, inputWidth, inputHeight)
+        
+        for (c in 0..2) {
+            for (y in 0 until inputHeight) {
+                for (x in 0 until inputWidth) {
+                    val pixel = pixels[y * inputWidth + x]
+                    val value = when (c) {
+                        0 -> ((pixel shr 16) and 0xFF) / 255.0f  // Red
+                        1 -> ((pixel shr 8) and 0xFF) / 255.0f   // Green
+                        else -> (pixel and 0xFF) / 255.0f        // Blue
+                    }
+                    inputBuffer.put(value)
+                }
+            }
+        }
+        inputBuffer.rewind()
+
+        if (resizedBitmap != bitmap) {
+            resizedBitmap.recycle()
+        }
+        paddedBitmap.recycle()
+
+        return PreprocessResult(inputBuffer, ratio, padX, padY)
+    }
+
+    private fun runInference(
+        preprocessResult: PreprocessResult,
+        originalWidth: Int,
+        originalHeight: Int,
+        confidenceThreshold: Float,
+        iouThreshold: Float
+    ): List<Detection> {
         var inputTensor: OnnxTensor? = null
         var result: OrtSession.Result? = null
 
         try {
             inputTensor = OnnxTensor.createTensor(
                 env,
-                preprocessedImage,
+                preprocessResult.inputBuffer,
                 longArrayOf(1, 3, inputHeight.toLong(), inputWidth.toLong())
             )
 
-            val inputs = mapOf(INPUT_NAME to inputTensor)
+            val inputName = session!!.inputInfo.keys.first()
+            val inputs = mapOf(inputName to inputTensor)
             result = session!!.run(inputs)
 
-            // YOLOE outputs: [0] = detections (1, 300, 38), [1] = prototypes (1, 32, 160, 160)
-            val detectionsOutput = result[0]?.value as? Array<*>
+            // Standard YOLO output: [1, NUM_OUTPUT_FEATURES, NUM_DETECTIONS]
+            val rawOutput = result[0]?.value as? Array<Array<FloatArray>>
                 ?: throw IllegalStateException("Invalid output format from model")
 
             Log.d(loggerTag, "Model output received successfully")
-            return parseModelOutput(detectionsOutput)
+            
+            return postProcessDetection(
+                rawOutput,
+                originalWidth,
+                originalHeight,
+                preprocessResult.scaleFactor,
+                preprocessResult.padX,
+                preprocessResult.padY,
+                confidenceThreshold,
+                iouThreshold
+            )
         } catch (e: Exception) {
             Log.e(loggerTag, "Inference failed", e)
             throw IllegalStateException("YOLO inference failed: ${e.message}", e)
@@ -162,71 +236,149 @@ class YoloOnnxHandler(private val context: Context) {
         }
     }
 
-    private fun parseModelOutput(output: Array<*>): InferenceOutput {
-        // Expected shape: [1, 300, 38] where first dimension is batch
-        if (output.isEmpty()) {
-            return InferenceOutput(emptyArray())
-        }
-
-        @Suppress("UNCHECKED_CAST")
-        val batchOutput = output[0] as? Array<FloatArray>
-            ?: throw IllegalStateException("Unexpected output format")
-
-        Log.d(loggerTag, "Detection output shape: [${output.size}, ${batchOutput.size}, ${batchOutput.firstOrNull()?.size ?: 0}]")
-        
-        return InferenceOutput(batchOutput)
-    }
-
-    private fun processInferenceOutput(
-        inferenceOutput: InferenceOutput,
+    private fun postProcessDetection(
+        rawOutput: Array<Array<FloatArray>>,
+        originalWidth: Int,
+        originalHeight: Int,
+        scaleFactor: Float,
+        padX: Float,
+        padY: Float,
         confidenceThreshold: Float,
-        imageInfo: ImageInfo
+        iouThreshold: Float
     ): List<Detection> {
-        val detections = mutableListOf<Detection>()
-        
-        for (prediction in inferenceOutput.detections) {
-            if (prediction.size < MIN_BOX_ATTRIBUTES) {
-                continue
+        try {
+            val outputData = rawOutput[0]
+            
+            // Get dimensions - [NUM_OUTPUT_FEATURES, NUM_DETECTIONS]
+            val numOutputFeatures = outputData.size
+            numDetections = outputData[0].size
+            
+            Log.d(loggerTag, "Processing output: [$numOutputFeatures, $numDetections]")
+
+            val boxes = ArrayList<RectF>()
+            val confidences = ArrayList<Float>()
+            val classIds = ArrayList<Int>()
+
+            // Parse detections directly without full transposition to save memory
+            // Access pattern: outputData[feature_index][detection_index]
+            for (i in 0 until numDetections) {
+                // Extract coordinates directly from transposed format
+                val xCenter = outputData[0][i]
+                val yCenter = outputData[1][i]
+                val boxWidth = outputData[2][i]
+                val boxHeight = outputData[3][i]
+                
+                // Find max class score across all classes
+                var maxScore = 0.0f
+                var classId = -1
+                for (j in 0 until numClasses) {
+                    val score = outputData[4 + j][i]
+                    if (score > maxScore) {
+                        maxScore = score
+                        classId = j
+                    }
+                }
+                
+                // Only process detections above threshold
+                if (maxScore > confidenceThreshold) {
+                    // Convert from model space to original image space
+                    var x1 = (xCenter - boxWidth / 2f - padX) / scaleFactor
+                    var y1 = (yCenter - boxHeight / 2f - padY) / scaleFactor
+                    var x2 = (xCenter + boxWidth / 2f - padX) / scaleFactor
+                    var y2 = (yCenter + boxHeight / 2f - padY) / scaleFactor
+                    
+                    // Clamp to image boundaries
+                    x1 = x1.coerceIn(0f, originalWidth.toFloat())
+                    y1 = y1.coerceIn(0f, originalHeight.toFloat())
+                    x2 = x2.coerceIn(0f, originalWidth.toFloat())
+                    y2 = y2.coerceIn(0f, originalHeight.toFloat())
+                    
+                    // Only add valid boxes
+                    if (x2 > x1 && y2 > y1) {
+                        boxes.add(RectF(x1, y1, x2, y2))
+                        confidences.add(maxScore)
+                        classIds.add(classId)
+                    }
+                }
             }
 
-            val confidence = prediction[CONFIDENCE_INDEX]
-            if (confidence < confidenceThreshold) {
-                continue
+            Log.d(loggerTag, "Found ${boxes.size} detections above threshold $confidenceThreshold")
+
+            // Apply NMS
+            val nmsIndices = performNMS(boxes, confidences, classIds, iouThreshold)
+            val finalResults = ArrayList<Detection>()
+            
+            for (idx in nmsIndices) {
+                val className = classNames[classIds[idx]] ?: "Class ${classIds[idx]}"
+                finalResults.add(
+                    Detection(
+                        classIds[idx],
+                        className,
+                        confidences[idx],
+                        BoundingBox(
+                            boxes[idx].left,
+                            boxes[idx].top,
+                            boxes[idx].right,
+                            boxes[idx].bottom
+                        )
+                    )
+                )
             }
 
-            val detection = createDetection(prediction, confidence, imageInfo)
-            detection?.let { detections.add(it) }
+            Log.d(loggerTag, "After NMS: ${finalResults.size} detections")
+            return finalResults
+        } catch (e: Exception) {
+            Log.e(loggerTag, "Error in detection postprocessing", e)
+            return emptyList()
         }
-
-        Log.d(loggerTag, "Parsed ${detections.size} detections above threshold $confidenceThreshold")
-        return detections
     }
 
-    private fun createDetection(
-        prediction: FloatArray,
-        confidence: Float,
-        imageInfo: ImageInfo
-    ): Detection? {
-        val xCenter = prediction[BOX_X_CENTER_INDEX]
-        val yCenter = prediction[BOX_Y_CENTER_INDEX]
-        val width = prediction[BOX_WIDTH_INDEX]
-        val height = prediction[BOX_HEIGHT_INDEX]
-        val classId = prediction[CLASS_ID_INDEX].toInt()
-
-        if (width <= 0f || height <= 0f) {
-            return null
+    private fun performNMS(
+        boxes: List<RectF>,
+        confidences: List<Float>,
+        classIds: List<Int>,
+        iouThreshold: Float
+    ): List<Int> {
+        val finalIndices = mutableListOf<Int>()
+        val uniqueClasses = classIds.distinct()
+        
+        for (classId in uniqueClasses) {
+            val classIndices = classIds.mapIndexedNotNull { index, id -> 
+                if (id == classId) index else null 
+            }
+            
+            if (classIndices.isEmpty()) continue
+            
+            val sortedIndices = classIndices.sortedByDescending { confidences[it] }
+            val suppressed = BooleanArray(boxes.size)
+            
+            for (i in sortedIndices) {
+                if (suppressed[i]) continue
+                finalIndices.add(i)
+                
+                for (j in sortedIndices) {
+                    if (i == j || suppressed[j]) continue
+                    val iou = calculateIoU(boxes[i], boxes[j])
+                    if (iou > iouThreshold) {
+                        suppressed[j] = true
+                    }
+                }
+            }
         }
+        
+        return finalIndices
+    }
 
-        val className = classNames[classId] ?: "Class $classId"
-        val box = BoundingBox.fromCenterFormat(
-            xCenter, yCenter, width, height,
-            imageInfo.scaleX, imageInfo.scaleY,
-            imageInfo.originalWidth, imageInfo.originalHeight
-        )
-
-        return box?.let {
-            Detection(classId, className, confidence, it)
-        }
+    private fun calculateIoU(box1: RectF, box2: RectF): Float {
+        val x1 = max(box1.left, box2.left)
+        val y1 = max(box1.top, box2.top)
+        val x2 = min(box1.right, box2.right)
+        val y2 = min(box1.bottom, box2.bottom)
+        
+        val inter = if (x2 > x1 && y2 > y1) (x2 - x1) * (y2 - y1) else 0f
+        val union = box1.width() * box1.height() + box2.width() * box2.height() - inter
+        
+        return if (union > 0) inter / union else 0f
     }
 
     fun close() {
@@ -243,6 +395,14 @@ class YoloOnnxHandler(private val context: Context) {
     }
 
     // ========== Helper Classes (Single Responsibility Principle) ==========
+
+    /**
+     * Metadata structure from JSON
+     */
+    private data class ModelMetadata(
+        val classNames: Map<Int, String>,
+        val numClasses: Int
+    )
 
     /**
      * Handles loading assets from Flutter asset bundle
@@ -289,7 +449,7 @@ class YoloOnnxHandler(private val context: Context) {
             }
         }
 
-        fun loadClassNames(metadataAssetPath: String): Map<Int, String> {
+        fun loadMetadata(metadataAssetPath: String): ModelMetadata? {
             val flutterLoader = FlutterInjector.instance().flutterLoader()
             val assetKey = flutterLoader.getLookupKeyForAsset(metadataAssetPath)
 
@@ -297,9 +457,9 @@ class YoloOnnxHandler(private val context: Context) {
                 context.assets.open(assetKey).use { inputStream ->
                     val jsonText = inputStream.bufferedReader().use { it.readText() }
                     val json = JSONObject(jsonText)
-                    val namesJson = json.optJSONObject("names") ?: return emptyMap()
+                    val namesJson = json.optJSONObject("names") ?: return null
                     
-                    buildMap {
+                    val classNames = buildMap {
                         val keys = namesJson.keys()
                         while (keys.hasNext()) {
                             val key = keys.next()
@@ -309,107 +469,28 @@ class YoloOnnxHandler(private val context: Context) {
                             }
                         }
                     }
+                    
+                    val numClasses = classNames.size
+                    Log.i(loggerTag, "Loaded metadata: $numClasses classes")
+                    
+                    ModelMetadata(classNames, numClasses)
                 }
             } catch (e: IOException) {
                 Log.w(loggerTag, "Failed to load metadata: $metadataAssetPath", e)
-                emptyMap()
+                null
             }
         }
     }
 
     /**
-     * Handles image preprocessing for YOLO model
+     * Result from image preprocessing
      */
-    private object ImagePreprocessor {
-        fun preprocess(source: Bitmap, targetWidth: Int, targetHeight: Int): FloatBuffer {
-            val resized = resizeBitmap(source, targetWidth, targetHeight)
-            val floatBuffer = convertToFloatBuffer(resized, targetWidth, targetHeight)
-            
-            if (resized != source) {
-                resized.recycle()
-            }
-            
-            return floatBuffer
-        }
-
-        private fun resizeBitmap(bitmap: Bitmap, width: Int, height: Int): Bitmap {
-            return if (bitmap.width != width || bitmap.height != height) {
-                Bitmap.createScaledBitmap(bitmap, width, height, true)
-            } else {
-                bitmap
-            }
-        }
-
-        private fun convertToFloatBuffer(bitmap: Bitmap, width: Int, height: Int): FloatBuffer {
-            val pixelCount = width * height
-            val pixels = IntArray(pixelCount)
-            bitmap.getPixels(pixels, 0, width, 0, 0, width, height)
-
-            val floatBuffer = ByteBuffer.allocateDirect(4 * 3 * pixelCount)
-                .order(ByteOrder.nativeOrder())
-                .asFloatBuffer()
-
-            // Convert to CHW format (Channels, Height, Width) and normalize [0, 1]
-            val norm = 1f / 255f
-            for (channel in 0 until 3) {
-                for (pixel in pixels) {
-                    val value = when (channel) {
-                        0 -> ((pixel shr 16) and 0xFF) * norm  // Red
-                        1 -> ((pixel shr 8) and 0xFF) * norm   // Green
-                        else -> (pixel and 0xFF) * norm        // Blue
-                    }
-                    floatBuffer.put(value)
-                }
-            }
-            floatBuffer.rewind()
-            return floatBuffer
-        }
-    }
-
-    /**
-     * Applies Non-Maximum Suppression to filter overlapping detections
-     */
-    private object NmsProcessor {
-        fun applyNms(detections: List<Detection>, iouThreshold: Float): List<Detection> {
-            if (detections.isEmpty()) return emptyList()
-
-            val sorted = detections.sortedByDescending { it.confidence }
-            val suppressed = BooleanArray(sorted.size)
-            val result = mutableListOf<Detection>()
-
-            for (i in sorted.indices) {
-                if (suppressed[i]) continue
-
-                val detectionA = sorted[i]
-                result.add(detectionA)
-
-                for (j in i + 1 until sorted.size) {
-                    if (suppressed[j]) continue
-
-                    val detectionB = sorted[j]
-                    if (calculateIou(detectionA.box, detectionB.box) > iouThreshold) {
-                        suppressed[j] = true
-                    }
-                }
-            }
-
-            return result
-        }
-
-        private fun calculateIou(a: BoundingBox, b: BoundingBox): Float {
-            val x1 = max(a.x1, b.x1)
-            val y1 = max(a.y1, b.y1)
-            val x2 = min(a.x2, b.x2)
-            val y2 = min(a.y2, b.y2)
-
-            if (x2 <= x1 || y2 <= y1) return 0f
-
-            val intersection = (x2 - x1) * (y2 - y1)
-            val union = a.area() + b.area() - intersection
-            
-            return if (union <= 0f) 0f else intersection / union
-        }
-    }
+    private data class PreprocessResult(
+        val inputBuffer: FloatBuffer,
+        val scaleFactor: Float,
+        val padX: Float,
+        val padY: Float
+    )
 
     /**
      * Maps Detection objects to Flutter-compatible Map format
@@ -435,37 +516,6 @@ class YoloOnnxHandler(private val context: Context) {
     }
 
     // ========== Data Classes ==========
-
-    /**
-     * Holds information about image dimensions and scaling factors
-     */
-    private data class ImageInfo(
-        val originalWidth: Int,
-        val originalHeight: Int,
-        val inputWidth: Int,
-        val inputHeight: Int
-    ) {
-        val scaleX: Float = originalWidth.toFloat() / inputWidth.toFloat()
-        val scaleY: Float = originalHeight.toFloat() / inputHeight.toFloat()
-    }
-
-    /**
-     * Wrapper for ONNX model inference output
-     */
-    private data class InferenceOutput(
-        val detections: Array<FloatArray>
-    ) {
-        override fun equals(other: Any?): Boolean {
-            if (this === other) return true
-            if (javaClass != other?.javaClass) return false
-            other as InferenceOutput
-            return detections.contentDeepEquals(other.detections)
-        }
-
-        override fun hashCode(): Int {
-            return detections.contentDeepHashCode()
-        }
-    }
 
     /**
      * Represents a single object detection
@@ -498,42 +548,5 @@ class YoloOnnxHandler(private val context: Context) {
             "width" to width().toDouble(),
             "height" to height().toDouble()
         )
-
-        companion object {
-            /**
-             * Creates a BoundingBox from center format (x_center, y_center, width, height)
-             * and scales it to original image dimensions
-             */
-            fun fromCenterFormat(
-                xCenter: Float,
-                yCenter: Float,
-                width: Float,
-                height: Float,
-                scaleX: Float,
-                scaleY: Float,
-                maxWidth: Int,
-                maxHeight: Int
-            ): BoundingBox? {
-                if (width <= 0f || height <= 0f) return null
-
-                val x1 = (xCenter - width / 2f) * scaleX
-                val y1 = (yCenter - height / 2f) * scaleY
-                val x2 = (xCenter + width / 2f) * scaleX
-                val y2 = (yCenter + height / 2f) * scaleY
-
-                // Clamp to image boundaries
-                val clampedX1 = x1.coerceIn(0f, maxWidth.toFloat())
-                val clampedY1 = y1.coerceIn(0f, maxHeight.toFloat())
-                val clampedX2 = x2.coerceIn(0f, maxWidth.toFloat())
-                val clampedY2 = y2.coerceIn(0f, maxHeight.toFloat())
-
-                // Validate box dimensions
-                if (clampedX2 <= clampedX1 || clampedY2 <= clampedY1) {
-                    return null
-                }
-
-                return BoundingBox(clampedX1, clampedY1, clampedX2, clampedY2)
-            }
-        }
     }
 }

@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
+import 'package:image/image.dart' as img;
 
 import 'package:flutter/material.dart';
 import 'package:flutter_uvc_camera/flutter_uvc_camera.dart';
@@ -47,6 +48,12 @@ class _CameraScreenState extends State<CameraScreen> {
 
   // UI state
   bool _isLoading = false;
+
+  // Angle (degrees) to rotate captured image to match displayed orientation.
+  // RotatedBox in the UI uses quarterTurns: 3 (270°). We rotate the input
+  // image by the same amount so the model sees the same orientation as the UI.
+  // Change this value if your camera hardware produces a different rotation.
+  final int _inputCorrectionAngle = 270;
 
   @override
   void initState() {
@@ -126,7 +133,7 @@ class _CameraScreenState extends State<CameraScreen> {
     if (!_modelReady) return;
     
     // Start periodic detection every 5 seconds
-    _periodicDetectionTimer = Timer.periodic(const Duration(seconds: 5), (_) {
+    _periodicDetectionTimer = Timer.periodic(const Duration(seconds: 2), (_) {
       if (isCameraOpen && _modelReady && !_isLoading) {
         _runPeriodicDetection();
       }
@@ -161,12 +168,14 @@ class _CameraScreenState extends State<CameraScreen> {
     try {
       final String? path = await cameraController.takePicture();
       if (path == null) return;
-      final Uint8List imageBytes = await File(path).readAsBytes();
+  final Uint8List rawImageBytes = await File(path).readAsBytes();
 
-      // await _ttsService.speak("Analyzing with YOLO model.");
+  // Rotate the input image bytes to match the UI orientation so the
+  // model receives the same visual orientation the user sees.
+  final Uint8List imageBytes = _rotateImageBytesIfNeeded(rawImageBytes, _inputCorrectionAngle);
 
-      // Use YOLO for object detection
-      final detections = await _yoloService.detectObjects(imageBytes);
+  // Use YOLO for object detection
+  final detections = await _yoloService.detectObjects(imageBytes);
       
       debugPrint('YOLO detections: ${detections.length} objects found');
       if (detections.isNotEmpty) {
@@ -207,6 +216,25 @@ class _CameraScreenState extends State<CameraScreen> {
       return null;
     }
     return Size(width, height);
+  }
+
+  /// Rotate input image bytes by [angleDegrees] if needed.
+  /// Returns original bytes on failure or when angle is a multiple of 360.
+  Uint8List _rotateImageBytesIfNeeded(Uint8List bytes, int angleDegrees) {
+    final normalized = ((angleDegrees % 360) + 360) % 360;
+    if (normalized == 0) return bytes;
+
+    try {
+      final img.Image? src = img.decodeImage(bytes);
+      if (src == null) return bytes;
+
+  final img.Image rotated = img.copyRotate(src, angle: normalized);
+      final List<int> encoded = img.encodeJpg(rotated, quality: 90);
+      return Uint8List.fromList(encoded);
+    } catch (e) {
+      debugPrint('Image rotation failed: $e');
+      return bytes;
+    }
   }
 
   @override

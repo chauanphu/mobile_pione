@@ -16,6 +16,7 @@ class YoloService {
   static const int inputHeight = 640;
   static const double confidenceThreshold = 0.5;
   static const double iouThreshold = 0.45;
+  static const bool applyNms = true; // NMS is now always applied in native code
 
   bool get isInitialized => _isInitialized;
   String? get error => _error;
@@ -65,7 +66,7 @@ class YoloService {
 
   Future<List<Map<String, dynamic>>> detectObjects(
     Uint8List imageBytes, {
-    bool applyNms = false,
+    bool applyNms = false, // NMS is now handled in native code
   }) async {
     if (!_isInitialized) {
       throw Exception('YOLO model not initialized. Call initializeModel() first.');
@@ -78,7 +79,7 @@ class YoloService {
           'image': imageBytes,
           'confidenceThreshold': confidenceThreshold,
           'iouThreshold': iouThreshold,
-          'applyNms': applyNms,
+          'applyNms': applyNms, // Pass to native, but NMS is always applied there
         },
       );
 
