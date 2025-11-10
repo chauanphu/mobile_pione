@@ -150,7 +150,7 @@ class _CameraScreenState extends State<CameraScreen> {
     setState(() {
       _inCooldown = true;
     });
-    _cooldownTimer = Timer(const Duration(seconds: 5), () {
+    _cooldownTimer = Timer(const Duration(seconds: 2), () {
       if (mounted) {
         setState(() {
           _inCooldown = false;
