@@ -37,6 +37,13 @@ class _CaptureScreenState extends State<CaptureScreen> {
   // Drawing State
   Offset? _drawingStart;
   Offset? _drawingEnd;
+  
+  // Display configuration - scale to 320x320 for phone screen
+  static const double displayWidth = 320.0;
+  static const double displayHeight = 320.0;
+  
+  // Global key for getting widget bounds
+  final GlobalKey _imageKey = GlobalKey();
 
   @override
   void initState() {
@@ -59,7 +66,7 @@ class _CaptureScreenState extends State<CaptureScreen> {
 
       _cameraController = CameraController(
         cameras.first,
-        ResolutionPreset.high,
+        ResolutionPreset.medium, // Use medium to reduce overhead
         enableAudio: false,
       );
 
@@ -212,6 +219,46 @@ class _CaptureScreenState extends State<CaptureScreen> {
     });
   }
 
+  /// Hit test to find which detection box was tapped
+  /// Converts screen coordinates to image coordinates and checks intersection
+  int? _hitTestDetections(Offset tapPosition, Size widgetSize) {
+    if (_capturedImage == null || _detections.isEmpty) return null;
+
+    // Calculate scale factors from widget size to image size
+    final scaleX = _capturedImage!.width / widgetSize.width;
+    final scaleY = _capturedImage!.height / widgetSize.height;
+
+    // Convert tap position to image coordinates
+    final imageX = tapPosition.dx * scaleX;
+    final imageY = tapPosition.dy * scaleY;
+
+    // Check each detection box in reverse order (top to bottom in z-order)
+    for (int i = _detections.length - 1; i >= 0; i--) {
+      final box = _detections[i].box;
+      if (imageX >= box.x1 &&
+          imageX <= box.x2 &&
+          imageY >= box.y1 &&
+          imageY <= box.y2) {
+        return i;
+      }
+    }
+
+    return null;
+  }
+
+  /// Convert screen coordinates to image coordinates for drawing
+  Offset _screenToImageCoordinates(Offset screenPos, Size widgetSize) {
+    if (_capturedImage == null) return screenPos;
+
+    final scaleX = _capturedImage!.width / widgetSize.width;
+    final scaleY = _capturedImage!.height / widgetSize.height;
+
+    return Offset(
+      screenPos.dx * scaleX,
+      screenPos.dy * scaleY,
+    );
+  }
+
   Widget _buildCameraView() {
     if (_cameraError != null) {
       return Center(
@@ -233,7 +280,26 @@ class _CaptureScreenState extends State<CaptureScreen> {
           if (_cameraController == null || !_cameraController!.value.isInitialized) {
             return const Center(child: Text("Camera not available."));
           }
-          return CameraPreview(_cameraController!);
+          // Scale camera preview to 320x320 for better phone display
+          return Center(
+            child: SizedBox(
+              width: displayWidth,
+              height: displayHeight,
+              child: ClipRect(
+                child: OverflowBox(
+                  alignment: Alignment.center,
+                  child: FittedBox(
+                    fit: BoxFit.cover,
+                    child: SizedBox(
+                      width: displayWidth,
+                      height: displayHeight,
+                      child: CameraPreview(_cameraController!),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          );
         } else {
           return const Center(child: CircularProgressIndicator());
         }
@@ -244,44 +310,94 @@ class _CaptureScreenState extends State<CaptureScreen> {
   Widget _buildDetectionView() {
     if (_capturedImage == null) return const SizedBox.shrink();
 
-    return GestureDetector(
-      onTapDown: (details) {
-        if (!_isDrawingMode) {
-          // Check if tapped on a detection box
-          // TODO: Implement proper hit testing with coordinate transformation
-          // For now, select the first detection as a placeholder
-          if (_detections.isNotEmpty) {
-            _selectDetection(0);
-          }
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        // Calculate the size that maintains aspect ratio within 320x320
+        final imageAspect = _capturedImage!.width / _capturedImage!.height;
+        double width = displayWidth;
+        double height = displayHeight;
+        
+        if (imageAspect > 1) {
+          // Landscape - fit to width
+          height = width / imageAspect;
         } else {
-          // Start drawing new box
-          setState(() => _drawingStart = details.localPosition);
+          // Portrait or square - fit to height
+          width = height * imageAspect;
         }
+
+        return Center(
+          child: SizedBox(
+            width: width,
+            height: height,
+            child: GestureDetector(
+              key: _imageKey,
+              onTapDown: (details) {
+                if (!_isDrawingMode) {
+                  // Get the render box to get widget size
+                  final RenderBox? box = _imageKey.currentContext?.findRenderObject() as RenderBox?;
+                  if (box != null) {
+                    final widgetSize = box.size;
+                    final localPosition = details.localPosition;
+                    
+                    // Perform hit test
+                    final hitIndex = _hitTestDetections(localPosition, widgetSize);
+                    if (hitIndex != null) {
+                      _selectDetection(hitIndex);
+                    } else {
+                      // Deselect if tapped outside any box
+                      setState(() => _selectedDetectionIndex = null);
+                    }
+                  }
+                } else {
+                  // Start drawing new box
+                  setState(() => _drawingStart = details.localPosition);
+                }
+              },
+              onPanUpdate: (details) {
+                if (_isDrawingMode && _drawingStart != null) {
+                  setState(() => _drawingEnd = details.localPosition);
+                }
+              },
+              onPanEnd: (details) {
+                if (_isDrawingMode && _drawingStart != null && _drawingEnd != null) {
+                  // Get widget size for coordinate conversion
+                  final RenderBox? box = _imageKey.currentContext?.findRenderObject() as RenderBox?;
+                  if (box != null) {
+                    final widgetSize = box.size;
+                    final imageStart = _screenToImageCoordinates(_drawingStart!, widgetSize);
+                    final imageEnd = _screenToImageCoordinates(_drawingEnd!, widgetSize);
+                    
+                    // Store the image coordinates for the new box
+                    _showLabelSelectionDialog(
+                      isNewBox: true,
+                      boxStart: imageStart,
+                      boxEnd: imageEnd,
+                    );
+                  }
+                }
+              },
+              child: CustomPaint(
+                painter: DetectionPainter(
+                  image: _capturedImage!,
+                  detections: _detections,
+                  selectedIndex: _selectedDetectionIndex,
+                  drawingStart: _drawingStart,
+                  drawingEnd: _drawingEnd,
+                ),
+                child: Container(),
+              ),
+            ),
+          ),
+        );
       },
-      onPanUpdate: (details) {
-        if (_isDrawingMode && _drawingStart != null) {
-          setState(() => _drawingEnd = details.localPosition);
-        }
-      },
-      onPanEnd: (details) {
-        if (_isDrawingMode && _drawingStart != null && _drawingEnd != null) {
-          _showLabelSelectionDialog(isNewBox: true);
-        }
-      },
-      child: CustomPaint(
-        painter: DetectionPainter(
-          image: _capturedImage!,
-          detections: _detections,
-          selectedIndex: _selectedDetectionIndex,
-          drawingStart: _drawingStart,
-          drawingEnd: _drawingEnd,
-        ),
-        child: Container(),
-      ),
     );
   }
 
-  Future<void> _showLabelSelectionDialog({bool isNewBox = false}) async {
+  Future<void> _showLabelSelectionDialog({
+    bool isNewBox = false,
+    Offset? boxStart,
+    Offset? boxEnd,
+  }) async {
     final TextEditingController labelController = TextEditingController();
     
     await showDialog(
@@ -322,19 +438,18 @@ class _CaptureScreenState extends State<CaptureScreen> {
           ElevatedButton(
             onPressed: () {
               if (labelController.text.isNotEmpty) {
-                if (isNewBox && _drawingStart != null && _drawingEnd != null) {
-                  // Add new detection
-                  // TODO: Convert screen coordinates to image coordinates
+                if (isNewBox && boxStart != null && boxEnd != null) {
+                  // Add new detection with image coordinates
                   setState(() {
                     _detections.add(Detection(
                       classId: -1,
                       className: labelController.text,
                       confidence: 1.0,
                       box: BoundingBox(
-                        x1: _drawingStart!.dx,
-                        y1: _drawingStart!.dy,
-                        x2: _drawingEnd!.dx,
-                        y2: _drawingEnd!.dy,
+                        x1: boxStart.dx.clamp(0, _capturedImage!.width.toDouble()),
+                        y1: boxStart.dy.clamp(0, _capturedImage!.height.toDouble()),
+                        x2: boxEnd.dx.clamp(0, _capturedImage!.width.toDouble()),
+                        y2: boxEnd.dy.clamp(0, _capturedImage!.height.toDouble()),
                       ),
                     ));
                     _drawingStart = null;
