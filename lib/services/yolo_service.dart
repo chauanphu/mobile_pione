@@ -178,13 +178,6 @@ class YoloService {
     }
 
     description.write(' in the scene.');
-
-    final topDetection = sortedDetections.first;
-    final confidence = (topDetection['confidence'] as num?)?.toDouble() ?? 0.0;
-    final confidencePercent = (confidence * 100).toInt();
-    final className = topDetection['className'] as String? ?? 'unknown';
-    description.write(' The most prominent object is $className with $confidencePercent percent confidence.');
-    debugPrint('Generated description: $description');
     return description.toString();
   }
 

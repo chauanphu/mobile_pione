@@ -5,6 +5,7 @@ import 'package:mobile_pione/screens/glasses.dart';
 // import 'screens/capture_screen.dart';
 import 'screens/wallet_screen.dart';
 import 'screens/federated_learning_screen.dart';
+import 'screens/capture_screen.dart';
 
 void main() {
   runApp(const MyApp());
@@ -39,7 +40,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
   final List<Widget> _pages = const [
     CameraScreen(),
-    // CaptureScreen(),
+    CaptureScreen(),
     WalletScreen(),
     FederatedLearningScreen(),
   ];

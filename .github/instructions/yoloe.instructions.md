@@ -13,3 +13,13 @@ I am implementing a Detection using YOLOE model on Android. I have made some rec
   - The first tensor contains detection boxes with attributes (x_center, y_center, width, height, confidence, class_id).
   - The second tensor contains feature maps used for masking.
 - The model should already include Non-Maximum Suppression (NMS) to filter overlapping boxes.
+
+# Labelling correction
+1. First the user captures an image using the device camera.
+2. The captured image is then run through the YOLOE model to obtain detection results.
+3. The detection results are parsed to extract bounding boxes, confidence scores, and class IDs.
+4. Next, the user will either:
+  - Manually correct the labels by selecting bounding boxes and assigning correct class labels from a predefined list.
+  - And/Or confirm the automatically detected labels if they are accurate.
+  - And/Or select the draw the bounding boxes manually on the image. Then choose the correct class labels for each box (using the metadata). If no label is found, the user can create a new label.
+5. Finally, the corrected labels and bounding boxes are saved back to the dataset for future training and evaluation.
