@@ -14,7 +14,7 @@ class YoloService {
 
   static const int inputWidth = 640;
   static const int inputHeight = 640;
-  static const double confidenceThreshold = 0.5;
+  static const double confidenceThreshold = 0.65;
   static const double iouThreshold = 0.45;
   static const bool applyNms = true; // NMS is now always applied in native code
 

@@ -5,6 +5,7 @@ import 'dart:ui' as ui;
 
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
+import 'package:image/image.dart' as img;
 
 import '../services/yolo_service.dart';
 
@@ -31,7 +32,7 @@ class _CaptureScreenState extends State<CaptureScreen> {
   bool _modelReady = false;
   
   // Detection State
-  ui.Image? _capturedImage;
+  ui.Image? _capturedImage; // This will be the 640x640 image used for YOLO
   List<Detection> _detections = [];
   int? _selectedDetectionIndex;
   bool _isDrawingMode = false;
@@ -40,7 +41,7 @@ class _CaptureScreenState extends State<CaptureScreen> {
   Offset? _drawingStart;
   Offset? _drawingEnd;
   
-  // Display configuration - scale to 320x320 for phone screen
+  // Display configuration - 320x320 display (half of 640x640 input)
   static const double displayWidth = 320.0;
   static const double displayHeight = 320.0;
   
@@ -112,17 +113,24 @@ class _CaptureScreenState extends State<CaptureScreen> {
     setState(() => _isProcessing = true);
 
     try {
-      // Capture image
+      // Capture image from camera
       final XFile imageFile = await _cameraController!.takePicture();
-      final Uint8List imageBytes = await imageFile.readAsBytes();
+      final Uint8List rawImageBytes = await imageFile.readAsBytes();
 
-      // Decode image for display
-      final ui.Image image = await decodeImageFromList(imageBytes);
+      // Preprocess: center crop to 640x640 to match YOLO input
+      final Uint8List processedBytes = _preprocessImageTo640x640(rawImageBytes);
 
-      // Run YOLO detection
-      final detections = await _yoloService.detectObjects(imageBytes);
+      // Decode the 640x640 image for display
+      final ui.Image image = await decodeImageFromList(processedBytes);
+
+      // Verify it's 640x640
+      debugPrint('Processed image size: ${image.width}x${image.height}');
+
+      // Run YOLO detection on the 640x640 image
+      final detections = await _yoloService.detectObjects(processedBytes);
 
       // Convert to Detection objects
+      // Note: YOLO returns coordinates in the 640x640 space
       final List<Detection> parsedDetections = [];
       for (final detection in detections) {
         final box = detection['box'] as Map<String, dynamic>?;
@@ -158,6 +166,54 @@ class _CaptureScreenState extends State<CaptureScreen> {
       }
     } finally {
       setState(() => _isProcessing = false);
+    }
+  }
+
+  /// Preprocess camera image to 640x640 by center cropping
+  /// This ensures YOLO receives exactly 640x640 input
+  Uint8List _preprocessImageTo640x640(Uint8List imageBytes) {
+    try {
+      // Decode the image
+      final img.Image? srcImage = img.decodeImage(imageBytes);
+      if (srcImage == null) {
+        throw Exception('Failed to decode image');
+      }
+
+      final int srcWidth = srcImage.width;
+      final int srcHeight = srcImage.height;
+
+      debugPrint('Original camera image: ${srcWidth}x$srcHeight');
+
+      // Calculate center crop to get a square
+      final int cropSize = srcWidth < srcHeight ? srcWidth : srcHeight;
+      final int offsetX = (srcWidth - cropSize) ~/ 2;
+      final int offsetY = (srcHeight - cropSize) ~/ 2;
+
+      // Crop to square
+      final img.Image cropped = img.copyCrop(
+        srcImage,
+        x: offsetX,
+        y: offsetY,
+        width: cropSize,
+        height: cropSize,
+      );
+
+      // Resize to exactly 640x640
+      final img.Image resized = img.copyResize(
+        cropped,
+        width: 640,
+        height: 640,
+        interpolation: img.Interpolation.linear,
+      );
+
+      // Encode back to bytes
+      final List<int> encoded = img.encodeJpg(resized, quality: 95);
+      debugPrint('Preprocessed to 640x640');
+
+      return Uint8List.fromList(encoded);
+    } catch (e) {
+      debugPrint('Image preprocessing failed: $e, using original');
+      return imageBytes;
     }
   }
 
@@ -301,19 +357,6 @@ class _CaptureScreenState extends State<CaptureScreen> {
     );
   }
 
-  /// Convert screen coordinates to image coordinates for drawing
-  Offset _screenToImageCoordinates(Offset screenPos, Size widgetSize) {
-    if (_capturedImage == null) return screenPos;
-
-    final scaleX = _capturedImage!.width / widgetSize.width;
-    final scaleY = _capturedImage!.height / widgetSize.height;
-
-    return Offset(
-      screenPos.dx * scaleX,
-      screenPos.dy * scaleY,
-    );
-  }
-
   Widget _buildCameraView() {
     if (_cameraError != null) {
       return Center(
@@ -365,73 +408,78 @@ class _CaptureScreenState extends State<CaptureScreen> {
   Widget _buildDetectionView() {
     if (_capturedImage == null) return const SizedBox.shrink();
 
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        // Calculate the size that maintains aspect ratio within 320x320
-        final imageAspect = _capturedImage!.width / _capturedImage!.height;
-        double width = displayWidth;
-        double height = displayHeight;
-        
-        if (imageAspect > 1) {
-          // Landscape - fit to width
-          height = width / imageAspect;
-        } else {
-          // Portrait or square - fit to height
-          width = height * imageAspect;
-        }
-
-        return Center(
-          child: SizedBox(
-            width: width,
-            height: height,
-            child: GestureDetector(
-              key: _imageKey,
-              onTapDown: (details) {
-                if (_isDrawingMode) {
-                  // Start drawing new box in drawing mode
-                  setState(() => _drawingStart = details.localPosition);
-                } else {
-                  // Deselect when tapping on image (if not drawing)
-                  setState(() => _selectedDetectionIndex = null);
+    // The captured image is guaranteed to be 640x640
+    // Display it at 320x320 (exact half scale)
+    // Bounding boxes are in 640x640 space and will be scaled by 0.5
+    return Center(
+      child: SizedBox(
+        width: displayWidth,
+        height: displayHeight,
+        child: GestureDetector(
+          key: _imageKey,
+          onTapDown: (details) {
+            if (_isDrawingMode) {
+              // Start drawing new box in drawing mode
+              setState(() => _drawingStart = details.localPosition);
+            } else {
+              // Check if tapping on a detection to select it
+              final tapPos = details.localPosition;
+              int? tappedIndex;
+              
+              // Scale tap coordinates to 640x640 space
+              final scaledTapX = tapPos.dx * 2.0; // 320 -> 640
+              final scaledTapY = tapPos.dy * 2.0;
+              
+              for (int i = 0; i < _detections.length; i++) {
+                final box = _detections[i].box;
+                if (scaledTapX >= box.x1 && scaledTapX <= box.x2 &&
+                    scaledTapY >= box.y1 && scaledTapY <= box.y2) {
+                  tappedIndex = i;
+                  break;
                 }
-              },
-              onPanUpdate: (details) {
-                if (_isDrawingMode && _drawingStart != null) {
-                  setState(() => _drawingEnd = details.localPosition);
-                }
-              },
-              onPanEnd: (details) {
-                if (_isDrawingMode && _drawingStart != null && _drawingEnd != null) {
-                  // Get widget size for coordinate conversion
-                  final RenderBox? box = _imageKey.currentContext?.findRenderObject() as RenderBox?;
-                  if (box != null) {
-                    final widgetSize = box.size;
-                    final imageStart = _screenToImageCoordinates(_drawingStart!, widgetSize);
-                    final imageEnd = _screenToImageCoordinates(_drawingEnd!, widgetSize);
-                    
-                    // Store the image coordinates for the new box
-                    _showLabelSelectionDialog(
-                      isNewBox: true,
-                      boxStart: imageStart,
-                      boxEnd: imageEnd,
-                    );
-                  }
-                }
-              },
-              child: CustomPaint(
-                painter: DetectionPainter(
-                  image: _capturedImage!,
-                  detections: _detections,
-                  selectedIndex: _selectedDetectionIndex,
-                  drawingStart: _drawingStart,
-                  drawingEnd: _drawingEnd,
-                ),
-                child: Container(),
-              ),
+              }
+              
+              setState(() => _selectedDetectionIndex = tappedIndex);
+            }
+          },
+          onPanUpdate: (details) {
+            if (_isDrawingMode && _drawingStart != null) {
+              setState(() => _drawingEnd = details.localPosition);
+            }
+          },
+          onPanEnd: (details) {
+            if (_isDrawingMode && _drawingStart != null && _drawingEnd != null) {
+              // Convert display coordinates (320x320) to image coordinates (640x640)
+              final imageStart = Offset(
+                _drawingStart!.dx * 2.0,
+                _drawingStart!.dy * 2.0,
+              );
+              final imageEnd = Offset(
+                _drawingEnd!.dx * 2.0,
+                _drawingEnd!.dy * 2.0,
+              );
+              
+              // Store the image coordinates for the new box
+              _showLabelSelectionDialog(
+                isNewBox: true,
+                boxStart: imageStart,
+                boxEnd: imageEnd,
+              );
+            }
+          },
+          child: CustomPaint(
+            painter: DetectionPainter(
+              image: _capturedImage!,
+              detections: _detections,
+              selectedIndex: _selectedDetectionIndex,
+              drawingStart: _drawingStart,
+              drawingEnd: _drawingEnd,
+              displaySize: const Size(displayWidth, displayHeight),
             ),
+            child: Container(),
           ),
-        );
-      },
+        ),
+      ),
     );
   }
 
@@ -738,10 +786,12 @@ class DetectionPainter extends CustomPainter {
   final int? selectedIndex;
   final Offset? drawingStart;
   final Offset? drawingEnd;
+  final Size displaySize;
 
   DetectionPainter({
     required this.image,
     required this.detections,
+    required this.displaySize,
     this.selectedIndex,
     this.drawingStart,
     this.drawingEnd,
@@ -749,16 +799,18 @@ class DetectionPainter extends CustomPainter {
 
   @override
   void paint(Canvas canvas, Size size) {
-    // Draw the image
+    // Draw the image scaled to fit the display size
+    // Image is 640x640, display is 320x320 (scale = 0.5)
     final src = Rect.fromLTWH(0, 0, image.width.toDouble(), image.height.toDouble());
-    final dst = Rect.fromLTWH(0, 0, size.width, size.height);
+    final dst = Rect.fromLTWH(0, 0, displaySize.width, displaySize.height);
     canvas.drawImageRect(image, src, dst, Paint());
 
-    // Calculate scaling factors
-    final scaleX = size.width / image.width;
-    final scaleY = size.height / image.height;
+    // Calculate scaling factors from image space (640x640) to display space (320x320)
+    // This should be exactly 0.5 for both dimensions
+    final scaleX = displaySize.width / image.width;
+    final scaleY = displaySize.height / image.height;
 
-    // Draw detections
+    // Draw detections (coordinates are in 640x640 space, scale to 320x320)
     for (int i = 0; i < detections.length; i++) {
       final detection = detections[i];
       final isSelected = i == selectedIndex;

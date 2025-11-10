@@ -48,11 +48,7 @@ class _CameraScreenState extends State<CameraScreen> {
 
   // UI state
   bool _isLoading = false;
-  
-  // Display configuration - scale to 320x320 for phone screen
-  static const double displayWidth = 320.0;
-  static const double displayHeight = 320.0;
-  
+
   // Angle (degrees) to rotate captured image to match displayed orientation.
   // RotatedBox in the UI uses quarterTurns: 3 (270°). We rotate the input
   // image by the same amount so the model sees the same orientation as the UI.
@@ -347,35 +343,35 @@ class _CameraScreenState extends State<CameraScreen> {
           child: Stack(
             alignment: Alignment.center,
             children: [
-              // Scale display to 320x320 for better phone screen fit
-              Center(
-                child: SizedBox(
-                  width: displayWidth,
-                  height: displayHeight,
-                  child: RotatedBox(
-                    quarterTurns: 3, // 90° counter-clockwise
-                    child: UVCCameraView(
-                      cameraController: cameraController,
-                      width: 640,  // Keep input at 640x640 for YOLO
-                      height: 640,
-                    ),
-                  ),
-                ),
-              ),
-              // Bounding box overlay - scaled to match display
-              if (_currentDetections.isNotEmpty && isCameraOpen)
-                Center(
-                  child: SizedBox(
-                    width: displayWidth,
-                    height: displayHeight,
-                    child: CustomPaint(
-                      painter: BoundingBoxPainter(
-                        detections: _currentDetections,
-                        imageSize: _currentImageSize,
+              Stack(
+                alignment: Alignment.center,
+                children: [
+                  SizedBox(
+                    width: 320,
+                    height: 320,
+                    child: RotatedBox(
+                      quarterTurns: 3, // 90° counter-clockwise
+                      child: UVCCameraView(
+                        cameraController: cameraController,
+                        width: 640,
+                        height: 640,
                       ),
                     ),
                   ),
-                ),
+                  // Bounding box overlay - must match the display size exactly
+                  if (_currentDetections.isNotEmpty && isCameraOpen)
+                    SizedBox(
+                      width: 320,
+                      height: 320,
+                      child: CustomPaint(
+                        painter: BoundingBoxPainter(
+                          detections: _currentDetections,
+                          imageSize: _currentImageSize,
+                        ),
+                      ),
+                    ),
+                ],
+              ),
               if (!_cameraDetected)
                 Container(
                   color: Colors.black.withValues(alpha: 0.5),
