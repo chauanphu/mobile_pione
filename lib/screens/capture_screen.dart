@@ -310,7 +310,7 @@ class _CaptureScreenState extends State<CaptureScreen> {
               width: 140,
               margin: const EdgeInsets.symmetric(horizontal: 4, vertical: 8),
               decoration: BoxDecoration(
-                color: isSelected ? Colors.green.withOpacity(0.3) : Colors.black.withOpacity(0.5),
+                color: isSelected ? Colors.green.withValues(alpha: 0.3) : Colors.black.withValues(alpha: 0.5),
                 border: Border.all(
                   color: isSelected ? Colors.green : Colors.white24,
                   width: isSelected ? 2.5 : 1,
@@ -488,86 +488,50 @@ class _CaptureScreenState extends State<CaptureScreen> {
     Offset? boxStart,
     Offset? boxEnd,
   }) async {
-    final TextEditingController labelController = TextEditingController();
-    
     await showDialog(
       context: context,
-      builder: (context) => AlertDialog(
-        title: Text(isNewBox ? 'Add Label for New Box' : 'Change Label'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            TextField(
-              controller: labelController,
-              decoration: const InputDecoration(
-                labelText: 'Enter label name',
-                border: OutlineInputBorder(),
-              ),
-            ),
-            const SizedBox(height: 16),
-            const Text('Or select from available classes:'),
-            // TODO: Load available classes from metadata
-            Wrap(
-              spacing: 8,
-              children: ['person', 'car', 'dog', 'cat', 'chair'].map((label) {
-                return ActionChip(
-                  label: Text(label),
-                  onPressed: () {
-                    labelController.text = label;
-                  },
-                );
-              }).toList(),
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () {
-              // If cancelling a new box, exit drawing mode
-              if (isNewBox) {
-                setState(() {
-                  _drawingStart = null;
-                  _drawingEnd = null;
-                  _isDrawingMode = false;
-                });
-                widget.onDrawingModeChanged?.call(false);
-              }
-              Navigator.pop(context);
-            },
-            child: const Text('Cancel'),
-          ),
-          ElevatedButton(
-            onPressed: () {
-              if (labelController.text.isNotEmpty) {
-                if (isNewBox && boxStart != null && boxEnd != null) {
-                  // Add new detection with image coordinates
-                  setState(() {
-                    _detections.add(Detection(
-                      classId: -1,
-                      className: labelController.text,
-                      confidence: 1.0,
-                      box: BoundingBox(
-                        x1: boxStart.dx.clamp(0, _capturedImage!.width.toDouble()),
-                        y1: boxStart.dy.clamp(0, _capturedImage!.height.toDouble()),
-                        x2: boxEnd.dx.clamp(0, _capturedImage!.width.toDouble()),
-                        y2: boxEnd.dy.clamp(0, _capturedImage!.height.toDouble()),
-                      ),
-                    ));
-                    _drawingStart = null;
-                    _drawingEnd = null;
-                    _isDrawingMode = false;
-                  });
-                  // Notify parent that drawing mode is disabled
-                  widget.onDrawingModeChanged?.call(false);
-                } else if (_selectedDetectionIndex != null) {
-                  _updateDetectionLabel(_selectedDetectionIndex!, labelController.text);
-                }
-                Navigator.pop(context);
-              }
-            },
-            child: const Text('Apply'),
-          ),
-        ],
+      builder: (context) => _LabelSelectionDialog(
+        isNewBox: isNewBox,
+        availableLabels: _yoloService.getClassNamesList(),
+        onConfirm: (selectedLabel) {
+          if (selectedLabel.isNotEmpty) {
+            if (isNewBox && boxStart != null && boxEnd != null) {
+              // Add new detection with image coordinates
+              setState(() {
+                _detections.add(Detection(
+                  classId: -1,
+                  className: selectedLabel,
+                  confidence: 1.0,
+                  box: BoundingBox(
+                    x1: boxStart.dx.clamp(0, _capturedImage!.width.toDouble()),
+                    y1: boxStart.dy.clamp(0, _capturedImage!.height.toDouble()),
+                    x2: boxEnd.dx.clamp(0, _capturedImage!.width.toDouble()),
+                    y2: boxEnd.dy.clamp(0, _capturedImage!.height.toDouble()),
+                  ),
+                ));
+                _drawingStart = null;
+                _drawingEnd = null;
+                _isDrawingMode = false;
+              });
+              widget.onDrawingModeChanged?.call(false);
+            } else if (_selectedDetectionIndex != null) {
+              _updateDetectionLabel(_selectedDetectionIndex!, selectedLabel);
+            }
+          }
+          Navigator.pop(context);
+        },
+        onCancel: () {
+          // If cancelling a new box, exit drawing mode
+          if (isNewBox) {
+            setState(() {
+              _drawingStart = null;
+              _drawingEnd = null;
+              _isDrawingMode = false;
+            });
+            widget.onDrawingModeChanged?.call(false);
+          }
+          Navigator.pop(context);
+        },
       ),
     );
   }
@@ -623,7 +587,7 @@ class _CaptureScreenState extends State<CaptureScreen> {
               child: Container(
                 padding: const EdgeInsets.all(16),
                 decoration: BoxDecoration(
-                  color: Colors.black.withOpacity(0.9),
+                  color: Colors.black.withValues(alpha: 0.9),
                   borderRadius: const BorderRadius.vertical(top: Radius.circular(16)),
                 ),
                 child: Column(
@@ -880,5 +844,174 @@ class DetectionPainter extends CustomPainter {
         oldDelegate.selectedIndex != selectedIndex ||
         oldDelegate.drawingStart != drawingStart ||
         oldDelegate.drawingEnd != drawingEnd;
+  }
+}
+
+// ========== Label Selection Dialog ==========
+
+class _LabelSelectionDialog extends StatefulWidget {
+  final bool isNewBox;
+  final List<String> availableLabels;
+  final Function(String) onConfirm;
+  final VoidCallback onCancel;
+
+  const _LabelSelectionDialog({
+    required this.isNewBox,
+    required this.availableLabels,
+    required this.onConfirm,
+    required this.onCancel,
+  });
+
+  @override
+  State<_LabelSelectionDialog> createState() => _LabelSelectionDialogState();
+}
+
+class _LabelSelectionDialogState extends State<_LabelSelectionDialog> {
+  late TextEditingController _searchController;
+  late TextEditingController _customLabelController;
+  List<String> _filteredLabels = [];
+  bool _showCustomInput = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _searchController = TextEditingController();
+    _customLabelController = TextEditingController();
+    _filteredLabels = widget.availableLabels;
+  }
+
+  @override
+  void dispose() {
+    _searchController.dispose();
+    _customLabelController.dispose();
+    super.dispose();
+  }
+
+  void _updateSearch(String query) {
+    setState(() {
+      if (query.isEmpty) {
+        _filteredLabels = widget.availableLabels;
+      } else {
+        final lowerQuery = query.toLowerCase();
+        _filteredLabels = widget.availableLabels
+            .where((label) => label.toLowerCase().contains(lowerQuery))
+            .toList();
+      }
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: Text(widget.isNewBox ? 'Add Label for New Box' : 'Change Label'),
+      content: SizedBox(
+        width: double.maxFinite,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            // Search field
+            TextField(
+              controller: _searchController,
+              decoration: InputDecoration(
+                labelText: 'Search labels',
+                prefixIcon: const Icon(Icons.search),
+                border: const OutlineInputBorder(),
+                suffixIcon: _searchController.text.isNotEmpty
+                    ? IconButton(
+                        icon: const Icon(Icons.clear),
+                        onPressed: () {
+                          _searchController.clear();
+                          _updateSearch('');
+                        },
+                      )
+                    : null,
+              ),
+              onChanged: _updateSearch,
+            ),
+            const SizedBox(height: 12),
+            
+            // Filtered labels list
+            if (_filteredLabels.isNotEmpty)
+              Flexible(
+                child: ListView.builder(
+                  shrinkWrap: true,
+                  itemCount: _filteredLabels.length,
+                  itemBuilder: (context, index) {
+                    final label = _filteredLabels[index];
+                    return ListTile(
+                      title: Text(label),
+                      trailing: const Icon(Icons.check_circle_outline),
+                      onTap: () {
+                        widget.onConfirm(label);
+                      },
+                    );
+                  },
+                ),
+              )
+            else
+              Padding(
+                padding: const EdgeInsets.all(16.0),
+                child: Text(
+                  _searchController.text.isEmpty
+                      ? 'No labels available'
+                      : 'No labels match "${_searchController.text}"',
+                  style: Theme.of(context).textTheme.bodyMedium,
+                  textAlign: TextAlign.center,
+                ),
+              ),
+            
+            const SizedBox(height: 12),
+            
+            // Custom label input
+            if (_showCustomInput)
+              Column(
+                children: [
+                  TextField(
+                    controller: _customLabelController,
+                    decoration: InputDecoration(
+                      labelText: 'Enter new label',
+                      border: const OutlineInputBorder(),
+                      suffixIcon: _customLabelController.text.isNotEmpty
+                          ? IconButton(
+                              icon: const Icon(Icons.check),
+                              onPressed: () {
+                                if (_customLabelController.text.isNotEmpty) {
+                                  widget.onConfirm(_customLabelController.text);
+                                }
+                              },
+                            )
+                          : null,
+                    ),
+                    onChanged: (value) {
+                      setState(() {});
+                    },
+                  ),
+                  const SizedBox(height: 8),
+                ],
+              ),
+            
+            // Toggle custom input button
+            TextButton.icon(
+              onPressed: () {
+                setState(() {
+                  _showCustomInput = !_showCustomInput;
+                  if (!_showCustomInput) {
+                    _customLabelController.clear();
+                  }
+                });
+              },
+              icon: Icon(_showCustomInput ? Icons.close : Icons.add),
+              label: Text(_showCustomInput ? 'Cancel Custom' : 'Add New Label'),
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: widget.onCancel,
+          child: const Text('Cancel'),
+        ),
+      ],
+    );
   }
 }

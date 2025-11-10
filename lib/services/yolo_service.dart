@@ -20,6 +20,24 @@ class YoloService {
 
   bool get isInitialized => _isInitialized;
   String? get error => _error;
+  Map<String, String> get classNames => Map.unmodifiable(_classNames);
+
+  /// Get a list of class names sorted alphabetically
+  List<String> getClassNamesList() {
+    return _classNames.values.toList()..sort();
+  }
+
+  /// Search for class names matching the query (case-insensitive)
+  List<String> searchClassNames(String query) {
+    if (query.isEmpty) {
+      return getClassNamesList();
+    }
+    final lowerQuery = query.toLowerCase();
+    return _classNames.values
+        .where((name) => name.toLowerCase().contains(lowerQuery))
+        .toList()
+      ..sort();
+  }
 
   Future<void> initializeModel() async {
     if (_isInitialized) return;
