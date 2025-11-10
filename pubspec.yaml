@@ -56,10 +56,13 @@ dev_dependencies:
   # package. See that file for information about deactivating specific lint
   # rules and activating additional ones.
   flutter_lints: ^5.0.0
-
+  flutter_launcher_icons: ^0.14.4
 # For information on the generic Dart part of this file, see the
 # following page: https://dart.dev/tools/pub/pubspec
-
+flutter_launcher_icons:
+  android: true  # Enable for Android
+  ios: false      # Enable for iOS
+  image_path: "assets/images/logo.png"  # Path to your 1024x1024 PNG
 # The following section is specific to Flutter packages.
 flutter:
 
@@ -72,6 +75,7 @@ flutter:
   assets:
     - assets/abi/
     - assets/model/yolo/
+  
   #   - images/a_dot_burr.jpeg
   #   - images/a_dot_ham.jpeg
 
