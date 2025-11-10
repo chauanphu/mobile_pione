@@ -38,18 +38,20 @@ class _HomeScreenState extends State<HomeScreen> {
   // A PageController is used to control the PageView.
   late final PageController _pageController;
 
-  final List<Widget> _pages = const [
-    CameraScreen(),
-    CaptureScreen(),
-    WalletScreen(),
-    FederatedLearningScreen(),
-  ];
+  // Track if drawing mode is active to disable page navigation
+  bool _isDrawingModeActive = false;
 
   @override
   void initState() {
     super.initState();
     // Initialize the controller. The initialPage is 0 (the CaptureScreen).
     _pageController = PageController(initialPage: 0);
+  }
+
+  void _setDrawingMode(bool isDrawing) {
+    setState(() {
+      _isDrawingModeActive = isDrawing;
+    });
   }
 
   @override
@@ -66,7 +68,16 @@ class _HomeScreenState extends State<HomeScreen> {
       // This enables the swipe navigation between screens.
       body: PageView(
         controller: _pageController,
-        children: _pages,
+        // Disable physics when drawing mode is active
+        physics: _isDrawingModeActive 
+            ? const NeverScrollableScrollPhysics() 
+            : const PageScrollPhysics(),
+        children: [
+          const CameraScreen(),
+          CaptureScreen(onDrawingModeChanged: _setDrawingMode),
+          const WalletScreen(),
+          const FederatedLearningScreen(),
+        ],
       ),
       // The BottomNavigationBar has been removed.
     );

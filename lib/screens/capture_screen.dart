@@ -9,7 +9,9 @@ import 'package:flutter/material.dart';
 import '../services/yolo_service.dart';
 
 class CaptureScreen extends StatefulWidget {
-  const CaptureScreen({super.key});
+  final void Function(bool)? onDrawingModeChanged;
+  
+  const CaptureScreen({super.key, this.onDrawingModeChanged});
 
   @override
   State<CaptureScreen> createState() => _CaptureScreenState();
@@ -190,6 +192,8 @@ class _CaptureScreenState extends State<CaptureScreen> {
       _drawingStart = null;
       _drawingEnd = null;
     });
+    // Notify parent about drawing mode change
+    widget.onDrawingModeChanged?.call(_isDrawingMode);
   }
 
   void _saveAnnotations() {
@@ -217,6 +221,8 @@ class _CaptureScreenState extends State<CaptureScreen> {
       _drawingStart = null;
       _drawingEnd = null;
     });
+    // Notify parent that drawing mode is disabled
+    widget.onDrawingModeChanged?.call(false);
   }
 
   /// Hit test to find which detection box was tapped
@@ -432,7 +438,18 @@ class _CaptureScreenState extends State<CaptureScreen> {
         ),
         actions: [
           TextButton(
-            onPressed: () => Navigator.pop(context),
+            onPressed: () {
+              // If cancelling a new box, exit drawing mode
+              if (isNewBox) {
+                setState(() {
+                  _drawingStart = null;
+                  _drawingEnd = null;
+                  _isDrawingMode = false;
+                });
+                widget.onDrawingModeChanged?.call(false);
+              }
+              Navigator.pop(context);
+            },
             child: const Text('Cancel'),
           ),
           ElevatedButton(
@@ -456,6 +473,8 @@ class _CaptureScreenState extends State<CaptureScreen> {
                     _drawingEnd = null;
                     _isDrawingMode = false;
                   });
+                  // Notify parent that drawing mode is disabled
+                  widget.onDrawingModeChanged?.call(false);
                 } else if (_selectedDetectionIndex != null) {
                   _updateDetectionLabel(_selectedDetectionIndex!, labelController.text);
                 }
