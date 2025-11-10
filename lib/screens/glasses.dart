@@ -48,11 +48,7 @@ class _CameraScreenState extends State<CameraScreen> {
 
   // UI state
   bool _isLoading = false;
-
-  // Angle (degrees) to rotate captured image to match displayed orientation.
-  // RotatedBox in the UI uses quarterTurns: 3 (270°). We rotate the input
   // image by the same amount so the model sees the same orientation as the UI.
-  // Change this value if your camera hardware produces a different rotation.
   final int _inputCorrectionAngle = 270;
 
   @override

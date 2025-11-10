@@ -161,7 +161,7 @@ class _CaptureScreenState extends State<CaptureScreen> {
     }
   }
 
-  void _selectDetection(int index) {
+  void _selectDetectionByIndex(int index) {
     setState(() {
       _selectedDetectionIndex = index;
       _isDrawingMode = false;
@@ -225,31 +225,80 @@ class _CaptureScreenState extends State<CaptureScreen> {
     widget.onDrawingModeChanged?.call(false);
   }
 
-  /// Hit test to find which detection box was tapped
-  /// Converts screen coordinates to image coordinates and checks intersection
-  int? _hitTestDetections(Offset tapPosition, Size widgetSize) {
-    if (_capturedImage == null || _detections.isEmpty) return null;
-
-    // Calculate scale factors from widget size to image size
-    final scaleX = _capturedImage!.width / widgetSize.width;
-    final scaleY = _capturedImage!.height / widgetSize.height;
-
-    // Convert tap position to image coordinates
-    final imageX = tapPosition.dx * scaleX;
-    final imageY = tapPosition.dy * scaleY;
-
-    // Check each detection box in reverse order (top to bottom in z-order)
-    for (int i = _detections.length - 1; i >= 0; i--) {
-      final box = _detections[i].box;
-      if (imageX >= box.x1 &&
-          imageX <= box.x2 &&
-          imageY >= box.y1 &&
-          imageY <= box.y2) {
-        return i;
-      }
+  Widget _buildDetectionList() {
+    if (_detections.isEmpty) {
+      return const SizedBox(
+        height: 80,
+        child: Center(
+          child: Text(
+            'No detections yet',
+            style: TextStyle(color: Colors.white70, fontSize: 14),
+          ),
+        ),
+      );
     }
 
-    return null;
+    return SizedBox(
+      height: 120,
+      child: ListView.builder(
+        scrollDirection: Axis.horizontal,
+        padding: const EdgeInsets.symmetric(horizontal: 8),
+        itemCount: _detections.length,
+        itemBuilder: (context, index) {
+          final detection = _detections[index];
+          final isSelected = index == _selectedDetectionIndex;
+
+          return GestureDetector(
+            onTap: () => _selectDetectionByIndex(index),
+            child: Container(
+              width: 140,
+              margin: const EdgeInsets.symmetric(horizontal: 4, vertical: 8),
+              decoration: BoxDecoration(
+                color: isSelected ? Colors.green.withOpacity(0.3) : Colors.black.withOpacity(0.5),
+                border: Border.all(
+                  color: isSelected ? Colors.green : Colors.white24,
+                  width: isSelected ? 2.5 : 1,
+                ),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  // Class icon
+                  Icon(
+                    Icons.category,
+                    color: isSelected ? Colors.green : Colors.white70,
+                    size: 28,
+                  ),
+                  const SizedBox(height: 4),
+                  // Class name
+                  Text(
+                    detection.className,
+                    style: TextStyle(
+                      color: isSelected ? Colors.white : Colors.white70,
+                      fontSize: 14,
+                      fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+                    ),
+                    textAlign: TextAlign.center,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  const SizedBox(height: 2),
+                  // Confidence
+                  Text(
+                    '${(detection.confidence * 100).toStringAsFixed(0)}%',
+                    style: TextStyle(
+                      color: isSelected ? Colors.greenAccent : Colors.white54,
+                      fontSize: 12,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          );
+        },
+      ),
+    );
   }
 
   /// Convert screen coordinates to image coordinates for drawing
@@ -338,25 +387,12 @@ class _CaptureScreenState extends State<CaptureScreen> {
             child: GestureDetector(
               key: _imageKey,
               onTapDown: (details) {
-                if (!_isDrawingMode) {
-                  // Get the render box to get widget size
-                  final RenderBox? box = _imageKey.currentContext?.findRenderObject() as RenderBox?;
-                  if (box != null) {
-                    final widgetSize = box.size;
-                    final localPosition = details.localPosition;
-                    
-                    // Perform hit test
-                    final hitIndex = _hitTestDetections(localPosition, widgetSize);
-                    if (hitIndex != null) {
-                      _selectDetection(hitIndex);
-                    } else {
-                      // Deselect if tapped outside any box
-                      setState(() => _selectedDetectionIndex = null);
-                    }
-                  }
-                } else {
-                  // Start drawing new box
+                if (_isDrawingMode) {
+                  // Start drawing new box in drawing mode
                   setState(() => _drawingStart = details.localPosition);
+                } else {
+                  // Deselect when tapping on image (if not drawing)
+                  setState(() => _selectedDetectionIndex = null);
                 }
               },
               onPanUpdate: (details) {
@@ -539,52 +575,69 @@ class _CaptureScreenState extends State<CaptureScreen> {
               child: Container(
                 padding: const EdgeInsets.all(16),
                 decoration: BoxDecoration(
-                  color: Colors.black.withValues(alpha: 0.8),
+                  color: Colors.black.withOpacity(0.9),
                   borderRadius: const BorderRadius.vertical(top: Radius.circular(16)),
                 ),
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(
-                      'Detections: ${_detections.length}',
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontSize: 18,
-                        fontWeight: FontWeight.bold,
-                      ),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Text(
+                          'Detections: ${_detections.length}',
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 18,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                        if (_selectedDetectionIndex != null)
+                          Text(
+                            'Selected: ${_selectedDetectionIndex! + 1}',
+                            style: const TextStyle(
+                              color: Colors.greenAccent,
+                              fontSize: 14,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                      ],
                     ),
-                    const SizedBox(height: 8),
+                    const SizedBox(height: 12),
+                    // Detection list
+                    _buildDetectionList(),
+                    const SizedBox(height: 12),
+                    // Action buttons for selected detection
                     if (_selectedDetectionIndex != null) ...[
-                      Text(
-                        'Selected: ${_detections[_selectedDetectionIndex!].className}',
-                        style: const TextStyle(color: Colors.white70),
-                      ),
-                      Text(
-                        'Confidence: ${(_detections[_selectedDetectionIndex!].confidence * 100).toStringAsFixed(1)}%',
-                        style: const TextStyle(color: Colors.white70),
-                      ),
-                      const SizedBox(height: 8),
                       Row(
                         children: [
-                          ElevatedButton.icon(
-                            onPressed: () => _showLabelSelectionDialog(),
-                            icon: const Icon(Icons.edit, size: 18),
-                            label: const Text('Change Label'),
+                          Expanded(
+                            child: ElevatedButton.icon(
+                              onPressed: () => _showLabelSelectionDialog(),
+                              icon: const Icon(Icons.edit, size: 18),
+                              label: const Text('Change Label'),
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: Colors.blue,
+                              ),
+                            ),
                           ),
                           const SizedBox(width: 8),
-                          ElevatedButton.icon(
-                            onPressed: () => _deleteDetection(_selectedDetectionIndex!),
-                            icon: const Icon(Icons.delete, size: 18),
-                            label: const Text('Delete'),
-                            style: ElevatedButton.styleFrom(
-                              backgroundColor: Colors.red,
+                          Expanded(
+                            child: ElevatedButton.icon(
+                              onPressed: () => _deleteDetection(_selectedDetectionIndex!),
+                              icon: const Icon(Icons.delete, size: 18),
+                              label: const Text('Delete'),
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: Colors.red,
+                              ),
                             ),
                           ),
                         ],
                       ),
+                      const SizedBox(height: 8),
                     ],
-                    const SizedBox(height: 8),
+                    // Draw and Save buttons
                     Row(
                       children: [
                         Expanded(
@@ -604,7 +657,7 @@ class _CaptureScreenState extends State<CaptureScreen> {
                             icon: const Icon(Icons.save),
                             label: const Text('Save'),
                             style: ElevatedButton.styleFrom(
-                              backgroundColor: Colors.blue,
+                              backgroundColor: Colors.orange,
                             ),
                           ),
                         ),
